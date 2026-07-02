@@ -5,10 +5,8 @@ import Link from "next/link";
 import { AppShell } from "@/components/AppShell";
 import { DriveControls } from "@/components/DriveControls";
 import { ImpactRiskBadge } from "@/components/ImpactRiskBadge";
-import { LiveVideoPreview } from "@/components/LiveVideoPreview";
 import { MotionGauge } from "@/components/MotionGauge";
-import { RecordingTimer } from "@/components/RecordingTimer";
-import { SpeedDisplay } from "@/components/SpeedDisplay";
+import { RecordingCockpit } from "@/components/RecordingCockpit";
 import { useDriveSession } from "@/hooks/useDriveSession";
 
 export default function DrivePage() {
@@ -26,7 +24,14 @@ export default function DrivePage() {
   return (
     <AppShell>
       <div className="space-y-4">
-        <LiveVideoPreview stream={drive.stream} />
+        <RecordingCockpit
+          elapsed={drive.elapsed}
+          gpsSamples={drive.gpsTrail}
+          latestGps={drive.currentGps}
+          latestMotion={drive.currentMotion}
+          latestOrientation={drive.currentOrientation}
+          stream={drive.stream}
+        />
         {drive.videoSupported ? null : (
           <p className="rounded-lg border border-signal-amber bg-signal-amber/10 p-3 text-sm text-signal-amber">
             Video recording is not supported in this browser. Sensor and GPS logging can still continue.
@@ -47,11 +52,7 @@ export default function DrivePage() {
           </div>
         ) : null}
         <div className="grid grid-cols-2 gap-3">
-          <RecordingTimer seconds={drive.elapsed} />
           <ImpactRiskBadge eventCount={drive.highImpactEvents.length} latestMagnitude={latestMagnitude} />
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <SpeedDisplay speed={drive.currentGps?.speedMetresPerSecond} />
           <MotionGauge magnitude={latestMagnitude} />
         </div>
         <section className="rounded-lg border border-cockpit-line bg-cockpit-900 p-3 text-sm text-slate-400">

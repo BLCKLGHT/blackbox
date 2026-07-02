@@ -23,6 +23,7 @@ export function useDriveSession() {
   const [events, setEvents] = useState<HighImpactEvent[]>([]);
   const [manualMarkers, setManualMarkers] = useState<ManualMarker[]>([]);
   const [warnings, setWarnings] = useState<string[]>([]);
+  const [gpsTrail, setGpsTrail] = useState(session.gpsSamples);
 
   const addImpactEvent = useCallback((event: HighImpactEvent) => {
     setEvents((current) => [...current, event]);
@@ -88,6 +89,7 @@ export function useDriveSession() {
     const timer = window.setInterval(() => {
       const duration = Math.round((Date.now() - session.startedAt) / 1000);
       setElapsed(duration);
+      setGpsTrail(geo.samplesRef.current.slice(-80));
       detectImpact(motion.motionSamplesRef.current, geo.samplesRef.current);
       const partial: DriveSession = {
         ...session,
@@ -110,7 +112,9 @@ export function useDriveSession() {
     isRecording,
     elapsed,
     currentGps: geo.latestGps,
+    gpsTrail,
     currentMotion: motion.latestMotion,
+    currentOrientation: motion.latestOrientation,
     stream: video.stream,
     videoSupported: video.recordingSupported,
     warnings: [...warnings, video.error, geo.error, motion.error].filter((warning): warning is string => Boolean(warning)),

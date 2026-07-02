@@ -10,6 +10,7 @@ type DeviceMotionPermissionEvent = typeof DeviceMotionEvent & {
 
 export function useMotionRecorder() {
   const [latestMotion, setLatestMotion] = useState<MotionSample | null>(null);
+  const [latestOrientation, setLatestOrientation] = useState<OrientationSample | null>(null);
   const [error, setError] = useState<string | null>(null);
   const motionSamplesRef = useRef<MotionSample[]>([]);
   const orientationSamplesRef = useRef<OrientationSample[]>([]);
@@ -51,12 +52,14 @@ export function useMotionRecorder() {
   }, []);
 
   const onOrientation = useCallback((event: DeviceOrientationEvent) => {
-    orientationSamplesRef.current.push({
+    const sample = {
       timestamp: Date.now(),
       alpha: event.alpha,
       beta: event.beta,
       gamma: event.gamma
-    });
+    };
+    orientationSamplesRef.current.push(sample);
+    if (orientationSamplesRef.current.length % 5 === 0) setLatestOrientation(sample);
   }, []);
 
   const start = useCallback(async () => {
@@ -73,5 +76,5 @@ export function useMotionRecorder() {
     return { motionSamples: motionSamplesRef.current, orientationSamples: orientationSamplesRef.current };
   }, [onMotion, onOrientation]);
 
-  return { latestMotion, error, motionSamplesRef, orientationSamplesRef, start, stop };
+  return { latestMotion, latestOrientation, error, motionSamplesRef, orientationSamplesRef, start, stop };
 }
