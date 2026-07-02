@@ -1,0 +1,10 @@
+{
+  "name": "Black Box V4",
+  "short_name": "Black Box",
+  "description": "Personal vehicle evidence recorder",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#050607",
+  "theme_color": "#050607",
+  "orientation": "portrait"
+}
