@@ -7,6 +7,7 @@ import type { CameraLens, HudTarget, VideoQuality } from "@/types/drive";
 type VideoRecorderStartOptions = {
   cameraLens: CameraLens;
   hudEnabled: boolean;
+  plateOcrEnabled: boolean;
 };
 
 type VehicleDetector = {
@@ -23,10 +24,14 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean) {
   const mimeTypeRef = useRef("video/webm");
   const animationFrameRef = useRef<number | null>(null);
   const detectionTimerRef = useRef<number | null>(null);
+  const ocrTimerRef = useRef<number | null>(null);
+  const ocrBusyRef = useRef(false);
   const detectorRef = useRef<VehicleDetector | null>(null);
   const hudTargetsRef = useRef<HudTarget[]>([]);
+  const plateTextByTargetRef = useRef<Record<string, string>>({});
   const compositeStreamRef = useRef<MediaStream | null>(null);
   const detectorStatusRef = useRef<"idle" | "loading" | "ready" | "unsupported">("idle");
+  const plateOcrStatusRef = useRef<"idle" | "ready" | "unsupported">("idle");
 
   const getSupportedMimeType = useCallback(() => {
     if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") return "";
@@ -76,7 +81,60 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean) {
     ctx.restore();
   }, []);
 
-  const startHudDetection = useCallback(async (video: HTMLVideoElement) => {
+  const recognisePlateText = useCallback(async (video: HTMLVideoElement, target: HudTarget) => {
+    if (ocrBusyRef.current) return;
+    ocrBusyRef.current = true;
+    try {
+      if (plateOcrStatusRef.current === "idle") {
+        const tesseract = await import("tesseract.js");
+        if (typeof tesseract.recognize !== "function") {
+          plateOcrStatusRef.current = "unsupported";
+          setError("Plate OCR is unavailable in this browser. HUD vehicle boxes can still continue.");
+          return;
+        }
+        plateOcrStatusRef.current = "ready";
+      }
+      if (plateOcrStatusRef.current !== "ready") return;
+
+      const cropCanvas = document.createElement("canvas");
+      const videoWidth = video.videoWidth || 1;
+      const videoHeight = video.videoHeight || 1;
+      const sourceX = Math.max(0, target.x * videoWidth);
+      const sourceY = Math.max(0, (target.y + target.height * 0.52) * videoHeight);
+      const sourceWidth = Math.min(videoWidth - sourceX, target.width * videoWidth);
+      const sourceHeight = Math.min(videoHeight - sourceY, target.height * videoHeight * 0.38);
+      if (sourceWidth < 80 || sourceHeight < 24) return;
+
+      cropCanvas.width = 320;
+      cropCanvas.height = Math.max(80, Math.round((sourceHeight / sourceWidth) * 320));
+      const cropCtx = cropCanvas.getContext("2d");
+      if (!cropCtx) return;
+      cropCtx.filter = "contrast(1.35) grayscale(1)";
+      cropCtx.drawImage(video, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, cropCanvas.width, cropCanvas.height);
+      const { recognize } = await import("tesseract.js");
+      const result = await recognize(cropCanvas, "eng");
+      const plateText = cleanPlateText(result.data.text);
+      if (plateText) plateTextByTargetRef.current[target.id] = plateText;
+    } catch {
+      plateOcrStatusRef.current = "unsupported";
+      setError("Plate OCR could not run on this device. HUD vehicle boxes can still continue.");
+    } finally {
+      ocrBusyRef.current = false;
+    }
+  }, []);
+
+  const startPlateOcr = useCallback(
+    (video: HTMLVideoElement) => {
+      ocrTimerRef.current = window.setInterval(() => {
+        const lockedTarget = hudTargetsRef.current.find((target) => target.lockState === "locked") ?? hudTargetsRef.current[0];
+        if (!lockedTarget) return;
+        void recognisePlateText(video, lockedTarget);
+      }, 2200);
+    },
+    [recognisePlateText]
+  );
+
+  const startHudDetection = useCallback(async (video: HTMLVideoElement, plateOcrEnabled: boolean) => {
     if (detectorStatusRef.current === "idle") {
       detectorStatusRef.current = "loading";
       try {
@@ -113,7 +171,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean) {
                 width: width / videoWidth,
                 height: height / videoHeight,
                 lockState: centered && index === 0 ? "locked" : "candidate",
-                plateText: null
+                plateText: plateTextByTargetRef.current[`target-${index}`] ?? null
               } satisfies HudTarget;
             })
             .sort((a, b) => b.width * b.height - a.width * a.height)
@@ -123,10 +181,11 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean) {
         })
         .catch(() => undefined);
     }, 650);
-  }, []);
+    if (plateOcrEnabled) startPlateOcr(video);
+  }, [startPlateOcr]);
 
   const startCompositeRecording = useCallback(
-    async (mediaStream: MediaStream) => {
+    async (mediaStream: MediaStream, plateOcrEnabled: boolean) => {
       const video = document.createElement("video");
       video.muted = true;
       video.playsInline = true;
@@ -145,7 +204,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean) {
         animationFrameRef.current = window.requestAnimationFrame(draw);
       };
       draw();
-      await startHudDetection(video);
+      await startHudDetection(video, plateOcrEnabled);
 
       const canvasStream = canvas.captureStream(30);
       mediaStream.getAudioTracks().forEach((track) => canvasStream.addTrack(track));
@@ -174,7 +233,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean) {
         return true;
       }
 
-      const recordingStream = options.hudEnabled ? await startCompositeRecording(mediaStream) : mediaStream;
+      const recordingStream = options.hudEnabled ? await startCompositeRecording(mediaStream, options.plateOcrEnabled) : mediaStream;
       const mimeType = getSupportedMimeType();
       const recorder = mimeType ? new MediaRecorder(recordingStream, { mimeType }) : new MediaRecorder(recordingStream);
       mimeTypeRef.current = recorder.mimeType || mimeType || "video/webm";
@@ -194,10 +253,14 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean) {
   const stop = useCallback(async () => {
     if (animationFrameRef.current !== null) window.cancelAnimationFrame(animationFrameRef.current);
     if (detectionTimerRef.current !== null) window.clearInterval(detectionTimerRef.current);
+    if (ocrTimerRef.current !== null) window.clearInterval(ocrTimerRef.current);
     animationFrameRef.current = null;
     detectionTimerRef.current = null;
+    ocrTimerRef.current = null;
+    ocrBusyRef.current = false;
     setHudTargets([]);
     hudTargetsRef.current = [];
+    plateTextByTargetRef.current = {};
     const recorder = recorderRef.current;
     const stopped = new Promise<Blob | null>((resolve) => {
       if (!recorder || recorder.state === "inactive") {
@@ -223,4 +286,13 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean) {
   }, [stream]);
 
   return { stream, hudTargets, recordingSupported, error, start, stop };
+}
+
+function cleanPlateText(rawText: string): string | null {
+  const candidates = rawText
+    .toUpperCase()
+    .split(/\s+/)
+    .map((part) => part.replace(/[^A-Z0-9]/g, ""))
+    .filter((part) => part.length >= 3 && part.length <= 10 && /[A-Z]/.test(part) && /\d/.test(part));
+  return candidates[0] ?? null;
 }

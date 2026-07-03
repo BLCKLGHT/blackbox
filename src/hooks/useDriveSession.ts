@@ -15,6 +15,7 @@ import type { CameraLens } from "@/types/drive";
 type StartDriveOptions = {
   cameraLens: CameraLens;
   hudEnabled: boolean;
+  plateOcrEnabled: boolean;
 };
 
 export function useDriveSession() {

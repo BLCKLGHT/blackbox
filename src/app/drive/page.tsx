@@ -19,13 +19,14 @@ export default function DrivePage() {
   const [condensed, setCondensed] = useState(false);
   const [cameraLens, setCameraLens] = useState<CameraLens>("auto");
   const [hudEnabled, setHudEnabled] = useState(false);
+  const [plateOcrEnabled, setPlateOcrEnabled] = useState(false);
 
   const latestMagnitude = drive.currentMotion?.magnitude ?? 0;
 
   async function beginRecording() {
     setIsStarting(true);
     setHasStarted(true);
-    await drive.start({ cameraLens, hudEnabled });
+    await drive.start({ cameraLens, hudEnabled, plateOcrEnabled: hudEnabled && plateOcrEnabled });
     setIsStarting(false);
   }
 
@@ -60,13 +61,29 @@ export default function DrivePage() {
                 </div>
                 <p className="mt-2 text-xs leading-5 text-slate-500">iPhone browsers expose lenses differently. If exact lens switching is unavailable, Black Box uses the closest rear camera/zoom supported.</p>
               </div>
-              <label className="flex items-center justify-between gap-4 rounded-lg border border-cockpit-line bg-cockpit-950 p-3">
-                <span>
-                  <span className="block font-bold">HUD vehicle targeting</span>
-                  <span className="block text-xs leading-5 text-slate-500">Detects vehicles, draws green/yellow target boxes, and records boxes into the saved clip. Plate OCR is not enabled in this browser MVP.</span>
-                </span>
-                <input type="checkbox" checked={hudEnabled} onChange={(event) => setHudEnabled(event.target.checked)} />
-              </label>
+              <div className="space-y-2">
+                <label className="flex items-center justify-between gap-4 rounded-lg border border-cockpit-line bg-cockpit-950 p-3">
+                  <span>
+                    <span className="block font-bold">HUD vehicle targeting</span>
+                    <span className="block text-xs leading-5 text-slate-500">Detects vehicles, draws green/yellow target boxes, and records boxes into the saved clip.</span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={hudEnabled}
+                    onChange={(event) => {
+                      setHudEnabled(event.target.checked);
+                      if (!event.target.checked) setPlateOcrEnabled(false);
+                    }}
+                  />
+                </label>
+                <label className={`flex items-center justify-between gap-4 rounded-lg border p-3 ${hudEnabled ? "border-cockpit-line bg-cockpit-950" : "border-cockpit-line bg-cockpit-900 opacity-60"}`}>
+                  <span>
+                    <span className="block font-bold">Number plate OCR</span>
+                    <span className="block text-xs leading-5 text-slate-500">Opt-in OCR runs locally on vehicle crops and attaches plate-like text to HUD boxes when readable.</span>
+                  </span>
+                  <input type="checkbox" disabled={!hudEnabled} checked={plateOcrEnabled} onChange={(event) => setPlateOcrEnabled(event.target.checked)} />
+                </label>
+              </div>
             </div>
             <button
               className="touch-target mt-5 w-full rounded-lg bg-signal-blue px-5 py-4 text-lg font-black text-cockpit-950"
