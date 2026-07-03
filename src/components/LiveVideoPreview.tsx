@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { metresPerSecondToKmh } from "@/lib/drive-utils";
 import type { GpsSample, HudTarget, WeatherInfo } from "@/types/drive";
 
@@ -21,34 +21,64 @@ export function LiveVideoPreview({
 }) {
   const ref = useRef<HTMLVideoElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const [immersiveFullscreen, setImmersiveFullscreen] = useState(false);
   const locked = useMemo(() => hudTargets.find((target) => target.lockState === "locked") ?? null, [hudTargets]);
 
   useEffect(() => {
     if (ref.current) ref.current.srcObject = stream;
   }, [stream]);
 
-  async function enterFullscreen() {
+  useEffect(() => {
+    if (!immersiveFullscreen) return undefined;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [immersiveFullscreen]);
+
+  useEffect(() => {
+    function onFullscreenChange() {
+      if (!document.fullscreenElement) setImmersiveFullscreen(false);
+    }
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    document.addEventListener("webkitfullscreenchange", onFullscreenChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", onFullscreenChange);
+      document.removeEventListener("webkitfullscreenchange", onFullscreenChange);
+    };
+  }, []);
+
+  async function toggleFullscreen() {
     const element = wrapperRef.current;
     if (!element) return;
-    if (document.fullscreenElement) {
-      await document.exitFullscreen();
+    if (immersiveFullscreen || document.fullscreenElement) {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      setImmersiveFullscreen(false);
       return;
     }
-    await element.requestFullscreen?.();
+    try {
+      if (element.requestFullscreen) await element.requestFullscreen();
+      setImmersiveFullscreen(true);
+    } catch {
+      setImmersiveFullscreen(true);
+    }
   }
 
   return (
     <div
       ref={wrapperRef}
-      className={`relative overflow-hidden rounded-lg border border-cockpit-line bg-black ${
-        compact ? "h-36" : prominent ? "min-h-[420px] lg:min-h-[720px]" : "aspect-[9/16] max-h-[58vh]"
+      className={`relative overflow-hidden border border-cockpit-line bg-black ${
+        immersiveFullscreen
+          ? "fixed inset-0 z-[9999] h-[100dvh] rounded-none border-0"
+          : `rounded-lg ${compact ? "h-36" : prominent ? "min-h-[420px] lg:min-h-[720px]" : "aspect-[9/16] max-h-[58vh]"}`
       }`}
     >
       <div className="absolute left-3 top-3 z-10 rounded-full border border-signal-red/60 bg-black/70 px-3 py-1 text-xs font-black uppercase tracking-wide text-signal-red">
         REC Camera
       </div>
-      <button className="absolute right-3 top-3 z-20 rounded-md border border-signal-blue/70 bg-black/70 px-3 py-1 text-xs font-black uppercase tracking-wide text-signal-blue" onClick={() => void enterFullscreen()}>
-        Full Screen
+      <button className="absolute right-3 top-3 z-20 rounded-md border border-signal-blue/70 bg-black/70 px-3 py-1 text-xs font-black uppercase tracking-wide text-signal-blue" type="button" onClick={() => void toggleFullscreen()}>
+        {immersiveFullscreen ? "Exit" : "Full Screen"}
       </button>
       {stream ? (
         <video ref={ref} autoPlay muted playsInline className="h-full w-full object-cover" />
