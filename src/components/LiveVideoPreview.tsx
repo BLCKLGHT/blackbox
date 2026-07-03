@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { metresPerSecondToKmh } from "@/lib/drive-utils";
-import type { GpsSample, HudTarget, WeatherInfo } from "@/types/drive";
+import type { GpsSample, HudTarget, MotionSample, OrientationSample, WeatherInfo } from "@/types/drive";
 
 export function LiveVideoPreview({
   stream,
@@ -10,6 +10,8 @@ export function LiveVideoPreview({
   compact = false,
   hudTargets = [],
   latestGps = null,
+  latestMotion = null,
+  latestOrientation = null,
   weather = null
 }: {
   stream: MediaStream | null;
@@ -17,12 +19,18 @@ export function LiveVideoPreview({
   compact?: boolean;
   hudTargets?: HudTarget[];
   latestGps?: GpsSample | null;
+  latestMotion?: MotionSample | null;
+  latestOrientation?: OrientationSample | null;
   weather?: WeatherInfo | null;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [immersiveFullscreen, setImmersiveFullscreen] = useState(false);
   const locked = useMemo(() => hudTargets.find((target) => target.lockState === "locked") ?? null, [hudTargets]);
+  const pitch = latestOrientation?.beta ?? 0;
+  const roll = latestOrientation?.gamma ?? 0;
+  const heading = latestOrientation?.alpha ?? latestGps?.heading ?? 0;
+  const motionForce = latestMotion?.magnitude ?? 0;
 
   useEffect(() => {
     if (ref.current) ref.current.srcObject = stream;
@@ -74,10 +82,10 @@ export function LiveVideoPreview({
           : `rounded-lg ${compact ? "h-36" : prominent ? "min-h-[420px] lg:min-h-[720px]" : "aspect-[9/16] max-h-[58vh]"}`
       }`}
     >
-      <div className="absolute left-3 top-3 z-10 rounded-full border border-signal-red/60 bg-black/70 px-3 py-1 text-xs font-black uppercase tracking-wide text-signal-red">
+      <div className="absolute left-[calc(0.75rem+env(safe-area-inset-left))] top-[calc(0.75rem+env(safe-area-inset-top))] z-10 rounded-full border border-signal-red/60 bg-black/70 px-3 py-1 text-xs font-black uppercase tracking-wide text-signal-red">
         REC Camera
       </div>
-      <button className="absolute right-3 top-3 z-20 rounded-md border border-signal-blue/70 bg-black/70 px-3 py-1 text-xs font-black uppercase tracking-wide text-signal-blue" type="button" onClick={() => void toggleFullscreen()}>
+      <button className="absolute right-[calc(0.75rem+env(safe-area-inset-right))] top-[calc(0.75rem+env(safe-area-inset-top))] z-20 rounded-md border border-signal-blue/70 bg-black/70 px-3 py-1 text-xs font-black uppercase tracking-wide text-signal-blue" type="button" onClick={() => void toggleFullscreen()}>
         {immersiveFullscreen ? "Exit" : "Full Screen"}
       </button>
       {stream ? (
@@ -98,7 +106,7 @@ export function LiveVideoPreview({
                 height: `${target.height * 100}%`
               }}
             >
-              <span className={`absolute -bottom-7 left-0 whitespace-nowrap rounded-sm px-2 py-1 text-[10px] font-black uppercase ${target.lockState === "locked" ? "bg-signal-green text-cockpit-950" : "bg-signal-amber text-cockpit-950"}`}>
+              <span className={`absolute left-0 whitespace-nowrap rounded-sm px-2 py-1 font-black uppercase ${immersiveFullscreen ? "-bottom-8 text-xs" : "-bottom-7 text-[10px]"} ${target.lockState === "locked" ? "bg-signal-green text-cockpit-950" : "bg-signal-amber text-cockpit-950"}`}>
                 {target.lockState === "locked" ? "LOCK" : "VEH"}
                 {target.plateText && (target.plateConfidence ?? 0) >= 90 ? ` ${target.plateText}` : ""}
                 {target.estimatedSpeedMetresPerSecond !== null ? ` ${(target.estimatedSpeedMetresPerSecond * 3.6).toFixed(0)}KMH` : ""}
@@ -107,8 +115,16 @@ export function LiveVideoPreview({
           ))}
         </div>
       ) : null}
-      <div className="pointer-events-none absolute bottom-3 left-3 z-10 max-w-[78%] rounded-md border border-signal-green/40 bg-black/70 p-2 font-mono text-[11px] font-bold uppercase leading-5 text-signal-green sm:text-xs">
+      <div
+        className={`pointer-events-none absolute z-10 max-w-[82%] rounded-md border border-signal-green/40 bg-black/70 font-mono font-bold uppercase text-signal-green ${
+          immersiveFullscreen
+            ? "bottom-[calc(0.75rem+env(safe-area-inset-bottom))] left-[calc(0.75rem+env(safe-area-inset-left))] p-3 text-xs leading-6 sm:text-sm"
+            : "bottom-3 left-3 p-2 text-[11px] leading-5 sm:text-xs"
+        }`}
+      >
         <div>{metresPerSecondToKmh(latestGps?.speedMetresPerSecond).toFixed(0)} KMH</div>
+        <div>GYRO P/R {pitch.toFixed(0)} / {roll.toFixed(0)}</div>
+        <div>HDG {heading.toFixed(0).padStart(3, "0")} / FORCE {motionForce.toFixed(1)}</div>
         <div>{new Date().toLocaleTimeString()}</div>
         <div>{latestGps ? `${latestGps.latitude.toFixed(5)}, ${latestGps.longitude.toFixed(5)}` : "GPS --"}</div>
         <div>{weather ? `${weather.temperatureCelsius?.toFixed(0) ?? "--"}C ${weather.summary}` : "WX --"}</div>

@@ -50,7 +50,16 @@ export function RecordingCockpit({
           <FlightGyroDisplay orientation={latestOrientation} motion={latestMotion} compact={compact} />
           <RouteMap samples={gpsSamples} latest={latestGps} compact={compact} />
         </div>
-        <LiveVideoPreview stream={stream} prominent compact={compact} hudTargets={hudTargets} latestGps={latestGps} weather={weather} />
+        <LiveVideoPreview
+          stream={stream}
+          prominent
+          compact={compact}
+          hudTargets={hudTargets}
+          latestGps={latestGps}
+          latestMotion={latestMotion}
+          latestOrientation={latestOrientation}
+          weather={weather}
+        />
       </div>
     </section>
   );
