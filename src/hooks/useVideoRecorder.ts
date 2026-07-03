@@ -59,7 +59,15 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean) {
         resolve(chunksRef.current.length ? new Blob(chunksRef.current, { type: mimeTypeRef.current }) : null);
         return;
       }
-      recorder.onstop = () => resolve(chunksRef.current.length ? new Blob(chunksRef.current, { type: recorder.mimeType || mimeTypeRef.current }) : null);
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) chunksRef.current.push(event.data);
+      };
+      recorder.onstop = () => {
+        window.setTimeout(() => {
+          resolve(chunksRef.current.length ? new Blob(chunksRef.current, { type: recorder.mimeType || mimeTypeRef.current }) : null);
+        }, 80);
+      };
+      if (typeof recorder.requestData === "function") recorder.requestData();
       recorder.stop();
     });
     stream?.getTracks().forEach((track) => track.stop());

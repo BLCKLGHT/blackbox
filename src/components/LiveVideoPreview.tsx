@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 
-export function LiveVideoPreview({ stream, prominent = false }: { stream: MediaStream | null; prominent?: boolean }) {
+export function LiveVideoPreview({ stream, prominent = false, compact = false }: { stream: MediaStream | null; prominent?: boolean; compact?: boolean }) {
   const ref = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
@@ -10,7 +10,11 @@ export function LiveVideoPreview({ stream, prominent = false }: { stream: MediaS
   }, [stream]);
 
   return (
-    <div className={`relative overflow-hidden rounded-lg border border-cockpit-line bg-black ${prominent ? "min-h-[420px] lg:min-h-[720px]" : "aspect-[9/16] max-h-[58vh]"}`}>
+    <div
+      className={`relative overflow-hidden rounded-lg border border-cockpit-line bg-black ${
+        compact ? "h-36" : prominent ? "min-h-[420px] lg:min-h-[720px]" : "aspect-[9/16] max-h-[58vh]"
+      }`}
+    >
       <div className="absolute left-3 top-3 z-10 rounded-full border border-signal-red/60 bg-black/70 px-3 py-1 text-xs font-black uppercase tracking-wide text-signal-red">
         REC Camera
       </div>

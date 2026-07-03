@@ -1,14 +1,14 @@
 import type { GpsSample } from "@/types/drive";
 
-export function RouteMap({ samples, latest }: { samples: GpsSample[]; latest: GpsSample | null }) {
+export function RouteMap({ samples, latest, compact = false }: { samples: GpsSample[]; latest: GpsSample | null; compact?: boolean }) {
   const points = samples.filter((sample) => Number.isFinite(sample.latitude) && Number.isFinite(sample.longitude)).slice(-80);
   const projected = project(points);
   const polyline = projected.map((point) => `${point.x},${point.y}`).join(" ");
   const last = projected.at(-1);
 
   return (
-    <section className="rounded-lg border border-cockpit-line bg-cockpit-900 p-4">
-      <div className="mb-3 flex items-center justify-between gap-3">
+    <section className={`rounded-lg border border-cockpit-line bg-cockpit-900 ${compact ? "p-2" : "p-4"}`}>
+      <div className={`${compact ? "mb-1" : "mb-3"} flex items-center justify-between gap-3`}>
         <div>
           <div className="text-xs uppercase tracking-wide text-slate-500">GPS Route</div>
           <div className="text-sm font-bold text-slate-200">{points.length ? `${points.length} samples` : "Waiting for fix"}</div>
@@ -18,7 +18,7 @@ export function RouteMap({ samples, latest }: { samples: GpsSample[]; latest: Gp
           <div className="font-bold text-slate-200">{latest?.accuracy ? `${latest.accuracy.toFixed(0)}m` : "--"}</div>
         </div>
       </div>
-      <svg viewBox="0 0 320 190" role="img" aria-label="Live GPS route map" className="h-48 w-full rounded-md border border-cockpit-line bg-cockpit-950">
+      <svg viewBox="0 0 320 190" role="img" aria-label="Live GPS route map" className={`${compact ? "h-28" : "h-48"} w-full rounded-md border border-cockpit-line bg-cockpit-950`}>
         <defs>
           <pattern id="route-grid" width="32" height="32" patternUnits="userSpaceOnUse">
             <path d="M 32 0 L 0 0 0 32" fill="none" stroke="rgba(148,163,184,0.14)" strokeWidth="1" />
@@ -30,7 +30,7 @@ export function RouteMap({ samples, latest }: { samples: GpsSample[]; latest: Gp
         {last ? <circle cx={last.x} cy={last.y} r="7" fill="#4ade80" stroke="#050607" strokeWidth="3" /> : null}
         {!points.length ? <text x="160" y="98" textAnchor="middle" fill="#64748b" fontSize="13">GPS route will draw here</text> : null}
       </svg>
-      <div className="mt-3 truncate text-xs text-slate-500">
+      <div className={`${compact ? "mt-1" : "mt-3"} truncate text-xs text-slate-500`}>
         {latest ? `${latest.latitude.toFixed(5)}, ${latest.longitude.toFixed(5)}` : "No coordinates recorded yet"}
       </div>
     </section>

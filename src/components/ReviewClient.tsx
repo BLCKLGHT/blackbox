@@ -14,17 +14,23 @@ import { SessionSummaryCard } from "./SessionSummaryCard";
 export function ReviewClient() {
   const [session, setSession] = useState<DriveSession | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [videoExtension, setVideoExtension] = useState("webm");
 
   useEffect(() => {
+    let currentUrl: string | null = null;
     getLastSession().then(async (loaded) => {
       setSession(loaded);
       if (loaded?.videoBlobId) {
         const blob = await getVideoBlob(loaded.videoBlobId);
-        if (blob) setVideoUrl(URL.createObjectURL(blob));
+        if (blob) {
+          currentUrl = URL.createObjectURL(blob);
+          setVideoUrl(currentUrl);
+          setVideoExtension(blob.type.includes("mp4") ? "mp4" : "webm");
+        }
       }
     });
     return () => {
-      if (videoUrl) URL.revokeObjectURL(videoUrl);
+      if (currentUrl) URL.revokeObjectURL(currentUrl);
     };
   }, []);
 
@@ -109,7 +115,15 @@ export function ReviewClient() {
       ) : null}
 
       {videoUrl ? (
-        <video className="w-full rounded-lg border border-cockpit-line bg-black" src={videoUrl} controls playsInline />
+        <section className="rounded-lg border border-cockpit-line bg-cockpit-900 p-3">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h2 className="font-black">Watch Most Recent Save</h2>
+            <a className="rounded-md bg-signal-blue px-3 py-2 text-sm font-black text-cockpit-950" href={videoUrl} download={`black-box-${session.id}-video.${videoExtension}`} target="_blank">
+              Save Video
+            </a>
+          </div>
+          <video className="w-full rounded-lg border border-cockpit-line bg-black" src={videoUrl} controls playsInline preload="metadata" />
+        </section>
       ) : (
         <section className="rounded-lg border border-cockpit-line bg-cockpit-900 p-4 text-sm text-slate-400">No playable video was saved for this session.</section>
       )}

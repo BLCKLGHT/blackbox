@@ -13,6 +13,7 @@ export default function DrivePage() {
   const drive = useDriveSession();
   const [hasStarted, setHasStarted] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
+  const [condensed, setCondensed] = useState(false);
 
   const latestMagnitude = drive.currentMotion?.magnitude ?? 0;
 
@@ -26,6 +27,12 @@ export default function DrivePage() {
   return (
     <AppShell>
       <div className="space-y-4">
+        <button
+          className={`touch-target w-full rounded-lg border px-4 py-3 font-black ${condensed ? "border-signal-green bg-signal-green/10 text-signal-green" : "border-cockpit-line bg-cockpit-900 text-slate-200"}`}
+          onClick={() => setCondensed((current) => !current)}
+        >
+          {condensed ? "Expand Dashboard" : "Condense Dashboard"}
+        </button>
         {!hasStarted ? (
           <section className="rounded-lg border border-signal-blue/50 bg-cockpit-900 p-5 shadow-glow">
             <h1 className="text-2xl font-black">Ready to Record</h1>
@@ -48,6 +55,7 @@ export default function DrivePage() {
           latestMotion={drive.currentMotion}
           latestOrientation={drive.currentOrientation}
           stream={drive.stream}
+          compact={condensed}
         />
         {drive.videoSupported ? null : (
           <p className="rounded-lg border border-signal-amber bg-signal-amber/10 p-3 text-sm text-signal-amber">
@@ -68,11 +76,11 @@ export default function DrivePage() {
             ))}
           </div>
         ) : null}
-        <div className="grid grid-cols-2 gap-3">
-          <ImpactRiskBadge eventCount={drive.highImpactEvents.length} latestMagnitude={latestMagnitude} />
-          <MotionGauge magnitude={latestMagnitude} />
+        <div className={condensed ? "grid grid-cols-2 gap-2" : "grid grid-cols-2 gap-3"}>
+          <ImpactRiskBadge eventCount={drive.highImpactEvents.length} latestMagnitude={latestMagnitude} compact={condensed} />
+          <MotionGauge magnitude={latestMagnitude} compact={condensed} />
         </div>
-        <section className="rounded-lg border border-cockpit-line bg-cockpit-900 p-3 text-sm text-slate-400">
+        <section className={`rounded-lg border border-cockpit-line bg-cockpit-900 text-sm text-slate-400 ${condensed ? "p-2" : "p-3"}`}>
           GPS accuracy: {drive.currentGps?.accuracy ? `${drive.currentGps.accuracy.toFixed(0)}m` : "Waiting for fix"}
         </section>
         {drive.isRecording ? (

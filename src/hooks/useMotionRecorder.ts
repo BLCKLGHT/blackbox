@@ -20,6 +20,7 @@ export function useMotionRecorder() {
   const orientationSamplesRef = useRef<OrientationSample[]>([]);
   const lastMotionUiAtRef = useRef(0);
   const lastOrientationUiAtRef = useRef(0);
+  const orientationBaselineRef = useRef<OrientationSample | null>(null);
 
   const requestMotionPermission = useCallback(() => {
     if (typeof DeviceMotionEvent === "undefined") {
@@ -67,20 +68,36 @@ export function useMotionRecorder() {
   }, []);
 
   const onOrientation = useCallback((event: DeviceOrientationEvent) => {
-    const sample = {
+    const rawSample: OrientationSample = {
       timestamp: Date.now(),
       alpha: event.alpha,
       beta: event.beta,
       gamma: event.gamma
     };
-    orientationSamplesRef.current.push(sample);
-    if (sample.timestamp - lastOrientationUiAtRef.current > 100) {
-      lastOrientationUiAtRef.current = sample.timestamp;
-      setLatestOrientation(sample);
+    if (!orientationBaselineRef.current) orientationBaselineRef.current = rawSample;
+    const baseline = orientationBaselineRef.current;
+    const zeroedSample: OrientationSample = {
+      timestamp: rawSample.timestamp,
+      alpha: zeroAngle(rawSample.alpha, baseline.alpha),
+      beta: zeroLinear(rawSample.beta, baseline.beta),
+      gamma: zeroLinear(rawSample.gamma, baseline.gamma)
+    };
+    orientationSamplesRef.current.push(rawSample);
+    if (zeroedSample.timestamp - lastOrientationUiAtRef.current > 100) {
+      lastOrientationUiAtRef.current = zeroedSample.timestamp;
+      setLatestOrientation(zeroedSample);
     }
   }, []);
 
   const start = useCallback(async () => {
+    motionSamplesRef.current = [];
+    orientationSamplesRef.current = [];
+    orientationBaselineRef.current = null;
+    lastMotionUiAtRef.current = 0;
+    lastOrientationUiAtRef.current = 0;
+    setLatestMotion(null);
+    setLatestOrientation(null);
+    setError(null);
     const motionPermissionPromise = requestMotionPermission();
     const orientationPermissionPromise = requestOrientationPermission();
     const [motionPermission, orientationPermission] = await Promise.all([motionPermissionPromise, orientationPermissionPromise]);
@@ -106,4 +123,17 @@ export function useMotionRecorder() {
   }, [onMotion, onOrientation]);
 
   return { latestMotion, latestOrientation, error, motionSamplesRef, orientationSamplesRef, start, stop };
+}
+
+function zeroLinear(value: number | null, baseline: number | null): number | null {
+  if (value === null || baseline === null) return value;
+  return value - baseline;
+}
+
+function zeroAngle(value: number | null, baseline: number | null): number | null {
+  if (value === null || baseline === null) return value;
+  const diff = value - baseline;
+  if (diff > 180) return diff - 360;
+  if (diff < -180) return diff + 360;
+  return diff;
 }
