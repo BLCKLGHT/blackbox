@@ -2,7 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import { getVideoConstraints } from "@/lib/settings";
-import type { CameraLens, HudTarget, VideoQuality } from "@/types/drive";
+import type { CameraLens, HudFrame, HudTarget, VideoQuality } from "@/types/drive";
 
 type VideoRecorderStartOptions = {
   cameraLens: CameraLens;
@@ -23,6 +23,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOwnSp
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [recordingSupported, setRecordingSupported] = useState(true);
   const [hudTargets, setHudTargets] = useState<HudTarget[]>([]);
+  const hudFramesRef = useRef<HudFrame[]>([]);
   const [error, setError] = useState<string | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
@@ -89,9 +90,10 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOwnSp
       ctx.strokeRect(x, y, boxWidth, boxHeight);
       const label = buildHudLabel(target);
       const labelWidth = ctx.measureText(label).width + 14;
-      ctx.fillRect(x, Math.max(0, y - 28), labelWidth, 26);
+      const labelY = Math.min(height - 28, y + boxHeight + 4);
+      ctx.fillRect(x, labelY, labelWidth, 26);
       ctx.fillStyle = "#050607";
-      ctx.fillText(label, x + 7, Math.max(18, y - 9));
+      ctx.fillText(label, x + 7, labelY + 19);
     });
     ctx.restore();
   }, [buildHudLabel]);
@@ -231,6 +233,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOwnSp
             .sort((a, b) => b.width * b.height - a.width * a.height)
             .slice(0, 5);
           hudTargetsRef.current = vehicles.map((target, index) => ({ ...target, lockState: index === 0 && target.lockState === "locked" ? "locked" : "candidate" }));
+          if (hudTargetsRef.current.length) hudFramesRef.current.push({ timestamp: Date.now(), targets: hudTargetsRef.current });
           setHudTargets(hudTargetsRef.current);
         })
         .catch(() => undefined);
@@ -280,6 +283,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOwnSp
       });
       await applyCameraLens(mediaStream, options.cameraLens);
       setStream(mediaStream);
+      hudFramesRef.current = [];
 
       if (typeof MediaRecorder === "undefined") {
         setRecordingSupported(false);
@@ -340,7 +344,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOwnSp
     return stopped;
   }, [stream]);
 
-  return { stream, hudTargets, recordingSupported, error, start, stop };
+  return { stream, hudTargets, hudFramesRef, recordingSupported, error, start, stop };
 }
 
 function clamp(value: number, min: number, max: number): number {

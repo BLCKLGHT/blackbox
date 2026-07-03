@@ -9,12 +9,14 @@ import type { DriveSession } from "@/types/drive";
 import { MotionChart, SpeedChart } from "./Charts";
 import { EventTimeline } from "./EventTimeline";
 import { ExportButtons } from "./ExportButtons";
+import { ReplayMode } from "./ReplayMode";
 import { SessionSummaryCard } from "./SessionSummaryCard";
 
 export function ReviewClient() {
   const [session, setSession] = useState<DriveSession | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [videoExtension, setVideoExtension] = useState("webm");
+  const [replayMode, setReplayMode] = useState(false);
 
   useEffect(() => {
     let currentUrl: string | null = null;
@@ -118,11 +120,16 @@ export function ReviewClient() {
         <section className="rounded-lg border border-cockpit-line bg-cockpit-900 p-3">
           <div className="mb-3 flex items-center justify-between gap-3">
             <h2 className="font-black">Watch Most Recent Save</h2>
-            <a className="rounded-md bg-signal-blue px-3 py-2 text-sm font-black text-cockpit-950" href={videoUrl} download={`black-box-${session.id}-video.${videoExtension}`} target="_blank">
-              Save Video
-            </a>
+            <div className="flex gap-2">
+              <button className="rounded-md border border-signal-blue px-3 py-2 text-sm font-black text-signal-blue" onClick={() => setReplayMode((current) => !current)}>
+                {replayMode ? "Normal Video" : "Replay Mode"}
+              </button>
+              <a className="rounded-md bg-signal-blue px-3 py-2 text-sm font-black text-cockpit-950" href={videoUrl} download={`black-box-${session.id}-video.${videoExtension}`} target="_blank">
+                Save Video
+              </a>
+            </div>
           </div>
-          <video className="w-full rounded-lg border border-cockpit-line bg-black" src={videoUrl} controls playsInline preload="metadata" />
+          {replayMode ? <ReplayMode session={session} videoUrl={videoUrl} /> : <video className="w-full rounded-lg border border-cockpit-line bg-black" src={videoUrl} controls playsInline preload="metadata" />}
         </section>
       ) : (
         <section className="rounded-lg border border-cockpit-line bg-cockpit-900 p-4 text-sm text-slate-400">No playable video was saved for this session.</section>

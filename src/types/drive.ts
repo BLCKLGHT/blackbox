@@ -19,6 +19,11 @@ export interface HudTarget {
   relativeSpeedMetresPerSecond: number | null;
 }
 
+export interface HudFrame {
+  timestamp: number;
+  targets: HudTarget[];
+}
+
 export interface GpsSample {
   timestamp: number;
   latitude: number;
@@ -91,6 +96,7 @@ export interface DriveSession {
   gpsSamples: GpsSample[];
   motionSamples: MotionSample[];
   orientationSamples: OrientationSample[];
+  hudFrames: HudFrame[];
   highImpactEvents: HighImpactEvent[];
   manualMarkers: ManualMarker[];
   summary: DriveSummary;

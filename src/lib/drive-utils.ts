@@ -74,6 +74,7 @@ export function createSession(retentionHours: number): DriveSession {
     gpsSamples: [],
     motionSamples: [],
     orientationSamples: [],
+    hudFrames: [],
     highImpactEvents: [],
     manualMarkers: [],
     summary: createEmptySummary()

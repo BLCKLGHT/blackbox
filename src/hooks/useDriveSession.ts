@@ -73,6 +73,7 @@ export function useDriveSession() {
       gpsSamples,
       motionSamples,
       orientationSamples,
+      hudFrames: video.hudFramesRef.current,
       highImpactEvents: events,
       manualMarkers,
       summary: buildSummary(gpsSamples, motionSamples, events, manualMarkers)
@@ -107,6 +108,7 @@ export function useDriveSession() {
         gpsSamples: geo.samplesRef.current,
         motionSamples: motion.motionSamplesRef.current,
         orientationSamples: motion.orientationSamplesRef.current,
+        hudFrames: video.hudFramesRef.current,
         highImpactEvents: events,
         manualMarkers,
         summary: buildSummary(geo.samplesRef.current, motion.motionSamplesRef.current, events, manualMarkers)
