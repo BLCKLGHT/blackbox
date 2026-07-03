@@ -13,6 +13,10 @@ export interface HudTarget {
   height: number;
   lockState: "locked" | "candidate";
   plateText: string | null;
+  estimatedDistanceMetres: number | null;
+  estimatedCarLengthsAhead: number | null;
+  estimatedSpeedMetresPerSecond: number | null;
+  relativeSpeedMetresPerSecond: number | null;
 }
 
 export interface GpsSample {

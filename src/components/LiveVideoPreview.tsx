@@ -49,6 +49,8 @@ export function LiveVideoPreview({
             >
               <span className={`absolute -top-7 left-0 whitespace-nowrap rounded-sm px-2 py-1 text-[10px] font-black uppercase ${target.lockState === "locked" ? "bg-signal-green text-cockpit-950" : "bg-signal-amber text-cockpit-950"}`}>
                 {target.lockState === "locked" ? "LOCK" : "VEH"} {Math.round(target.confidence * 100)}% {target.plateText ?? ""}
+                {target.estimatedCarLengthsAhead !== null ? ` ${target.estimatedCarLengthsAhead.toFixed(1)}CL` : ""}
+                {target.estimatedSpeedMetresPerSecond !== null ? ` ${(target.estimatedSpeedMetresPerSecond * 3.6).toFixed(0)}KMH` : ""}
               </span>
             </div>
           ))}

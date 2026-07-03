@@ -23,7 +23,7 @@ export function useDriveSession() {
   const settings = useMemo(() => loadSettings(), []);
   const geo = useGeolocationRecorder();
   const motion = useMotionRecorder();
-  const video = useVideoRecorder(settings.videoQuality, settings.audioRecording);
+  const video = useVideoRecorder(settings.videoQuality, settings.audioRecording, () => geo.latestGpsRef.current?.speedMetresPerSecond ?? null);
   const [session, setSession] = useState<DriveSession>(() => createSession(settings.retentionHours));
   const [isRecording, setIsRecording] = useState(false);
   const [elapsed, setElapsed] = useState(0);

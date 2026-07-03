@@ -7,6 +7,7 @@ export function useGeolocationRecorder() {
   const [latestGps, setLatestGps] = useState<GpsSample | null>(null);
   const [error, setError] = useState<string | null>(null);
   const samplesRef = useRef<GpsSample[]>([]);
+  const latestGpsRef = useRef<GpsSample | null>(null);
   const watchIdRef = useRef<number | null>(null);
 
   const start = useCallback(() => {
@@ -27,6 +28,7 @@ export function useGeolocationRecorder() {
           altitude: position.coords.altitude
         };
         samplesRef.current.push(sample);
+        latestGpsRef.current = sample;
         setLatestGps(sample);
       },
       (geoError) => setError(geoError.message),
@@ -41,5 +43,5 @@ export function useGeolocationRecorder() {
     return samplesRef.current;
   }, []);
 
-  return { latestGps, error, samplesRef, start, stop };
+  return { latestGps, latestGpsRef, error, samplesRef, start, stop };
 }

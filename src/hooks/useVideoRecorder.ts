@@ -14,7 +14,12 @@ type VehicleDetector = {
   detect: (input: HTMLVideoElement) => Promise<Array<{ bbox: [number, number, number, number]; class: string; score: number }>>;
 };
 
-export function useVideoRecorder(quality: VideoQuality, audio: boolean) {
+type TargetEstimateHistory = {
+  distanceMetres: number;
+  timestamp: number;
+};
+
+export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOwnSpeedMetresPerSecond: () => number | null) {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [recordingSupported, setRecordingSupported] = useState(true);
   const [hudTargets, setHudTargets] = useState<HudTarget[]>([]);
@@ -29,6 +34,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean) {
   const detectorRef = useRef<VehicleDetector | null>(null);
   const hudTargetsRef = useRef<HudTarget[]>([]);
   const plateTextByTargetRef = useRef<Record<string, string>>({});
+  const targetEstimateHistoryRef = useRef<Record<string, TargetEstimateHistory>>({});
   const compositeStreamRef = useRef<MediaStream | null>(null);
   const detectorStatusRef = useRef<"idle" | "loading" | "ready" | "unsupported">("idle");
   const plateOcrStatusRef = useRef<"idle" | "ready" | "unsupported">("idle");
@@ -59,6 +65,15 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean) {
     }
   }, []);
 
+  const buildHudLabel = useCallback((target: HudTarget) => {
+    const lock = target.lockState === "locked" ? "LOCK" : "VEH";
+    const confidence = `${Math.round(target.confidence * 100)}%`;
+    const plate = target.plateText ? ` ${target.plateText}` : "";
+    const distance = target.estimatedCarLengthsAhead !== null ? ` ${target.estimatedCarLengthsAhead.toFixed(1)}CL` : "";
+    const speed = target.estimatedSpeedMetresPerSecond !== null ? ` ${Math.max(0, target.estimatedSpeedMetresPerSecond * 3.6).toFixed(0)}KMH` : "";
+    return `${lock} ${confidence}${plate}${distance}${speed}`;
+  }, []);
+
   const drawHud = useCallback((ctx: CanvasRenderingContext2D, targets: HudTarget[], width: number, height: number) => {
     ctx.save();
     ctx.lineWidth = Math.max(3, width * 0.003);
@@ -72,14 +87,52 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean) {
       ctx.strokeStyle = color;
       ctx.fillStyle = color;
       ctx.strokeRect(x, y, boxWidth, boxHeight);
-      const label = `${target.lockState === "locked" ? "LOCK" : "VEH"} ${Math.round(target.confidence * 100)}%${target.plateText ? ` ${target.plateText}` : ""}`;
+      const label = buildHudLabel(target);
       const labelWidth = ctx.measureText(label).width + 14;
       ctx.fillRect(x, Math.max(0, y - 28), labelWidth, 26);
       ctx.fillStyle = "#050607";
       ctx.fillText(label, x + 7, Math.max(18, y - 9));
     });
     ctx.restore();
-  }, []);
+  }, [buildHudLabel]);
+
+  const estimateTargetMotion = useCallback(
+    (targetId: string, bboxWidthPixels: number, videoWidth: number, label: string): Pick<HudTarget, "estimatedDistanceMetres" | "estimatedCarLengthsAhead" | "estimatedSpeedMetresPerSecond" | "relativeSpeedMetresPerSecond"> => {
+      const assumedWidthMetres = label === "motorcycle" ? 0.85 : label === "bus" || label === "truck" ? 2.45 : 1.85;
+      const assumedLengthMetres = label === "motorcycle" ? 2.2 : label === "bus" || label === "truck" ? 8.5 : 4.5;
+      const horizontalFovDegrees = 60;
+      const focalLengthPixels = videoWidth / (2 * Math.tan((horizontalFovDegrees * Math.PI) / 360));
+      const estimatedDistanceMetres = bboxWidthPixels > 4 ? (assumedWidthMetres * focalLengthPixels) / bboxWidthPixels : null;
+      if (estimatedDistanceMetres === null || !Number.isFinite(estimatedDistanceMetres)) {
+        return {
+          estimatedDistanceMetres: null,
+          estimatedCarLengthsAhead: null,
+          estimatedSpeedMetresPerSecond: null,
+          relativeSpeedMetresPerSecond: null
+        };
+      }
+
+      const now = Date.now();
+      const previous = targetEstimateHistoryRef.current[targetId];
+      const ownSpeed = getOwnSpeedMetresPerSecond() ?? 0;
+      let relativeSpeedMetresPerSecond: number | null = null;
+      let estimatedSpeedMetresPerSecond: number | null = null;
+      if (previous) {
+        const seconds = Math.max(0.25, (now - previous.timestamp) / 1000);
+        relativeSpeedMetresPerSecond = (estimatedDistanceMetres - previous.distanceMetres) / seconds;
+        estimatedSpeedMetresPerSecond = clamp(ownSpeed + relativeSpeedMetresPerSecond, 0, 80);
+      }
+      targetEstimateHistoryRef.current[targetId] = { distanceMetres: estimatedDistanceMetres, timestamp: now };
+
+      return {
+        estimatedDistanceMetres,
+        estimatedCarLengthsAhead: estimatedDistanceMetres / assumedLengthMetres,
+        estimatedSpeedMetresPerSecond,
+        relativeSpeedMetresPerSecond
+      };
+    },
+    [getOwnSpeedMetresPerSecond]
+  );
 
   const recognisePlateText = useCallback(async (video: HTMLVideoElement, target: HudTarget) => {
     if (ocrBusyRef.current) return;
@@ -171,7 +224,8 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean) {
                 width: width / videoWidth,
                 height: height / videoHeight,
                 lockState: centered && index === 0 ? "locked" : "candidate",
-                plateText: plateTextByTargetRef.current[`target-${index}`] ?? null
+                plateText: plateTextByTargetRef.current[`target-${index}`] ?? null,
+                ...estimateTargetMotion(`target-${index}`, width, videoWidth, prediction.class)
               } satisfies HudTarget;
             })
             .sort((a, b) => b.width * b.height - a.width * a.height)
@@ -182,7 +236,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean) {
         .catch(() => undefined);
     }, 650);
     if (plateOcrEnabled) startPlateOcr(video);
-  }, [startPlateOcr]);
+  }, [estimateTargetMotion, startPlateOcr]);
 
   const startCompositeRecording = useCallback(
     async (mediaStream: MediaStream, plateOcrEnabled: boolean) => {
@@ -261,6 +315,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean) {
     setHudTargets([]);
     hudTargetsRef.current = [];
     plateTextByTargetRef.current = {};
+    targetEstimateHistoryRef.current = {};
     const recorder = recorderRef.current;
     const stopped = new Promise<Blob | null>((resolve) => {
       if (!recorder || recorder.state === "inactive") {
@@ -286,6 +341,10 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean) {
   }, [stream]);
 
   return { stream, hudTargets, recordingSupported, error, start, stop };
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
 function cleanPlateText(rawText: string): string | null {
