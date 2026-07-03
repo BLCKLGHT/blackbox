@@ -13,6 +13,7 @@ export interface HudTarget {
   height: number;
   lockState: "locked" | "candidate";
   plateText: string | null;
+  plateConfidence: number | null;
   estimatedDistanceMetres: number | null;
   estimatedCarLengthsAhead: number | null;
   estimatedSpeedMetresPerSecond: number | null;

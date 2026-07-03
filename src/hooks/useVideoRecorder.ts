@@ -19,6 +19,11 @@ type TargetEstimateHistory = {
   timestamp: number;
 };
 
+type PlateMemory = {
+  confidence: number;
+  expiresAt: number;
+};
+
 export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOwnSpeedMetresPerSecond: () => number | null) {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [recordingSupported, setRecordingSupported] = useState(true);
@@ -35,7 +40,11 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOwnSp
   const detectorRef = useRef<VehicleDetector | null>(null);
   const hudTargetsRef = useRef<HudTarget[]>([]);
   const plateTextByTargetRef = useRef<Record<string, string>>({});
+  const plateConfidenceByTargetRef = useRef<Record<string, number>>({});
+  const plateMemoryRef = useRef<Record<string, PlateMemory>>({});
   const targetEstimateHistoryRef = useRef<Record<string, TargetEstimateHistory>>({});
+  const lockedTargetRef = useRef<HudTarget | null>(null);
+  const lockedTargetMissesRef = useRef(0);
   const compositeStreamRef = useRef<MediaStream | null>(null);
   const detectorStatusRef = useRef<"idle" | "loading" | "ready" | "unsupported">("idle");
   const plateOcrStatusRef = useRef<"idle" | "ready" | "unsupported">("idle");
@@ -68,11 +77,9 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOwnSp
 
   const buildHudLabel = useCallback((target: HudTarget) => {
     const lock = target.lockState === "locked" ? "LOCK" : "VEH";
-    const confidence = `${Math.round(target.confidence * 100)}%`;
-    const plate = target.plateText ? ` ${target.plateText}` : "";
-    const distance = target.estimatedCarLengthsAhead !== null ? ` ${target.estimatedCarLengthsAhead.toFixed(1)}CL` : "";
+    const plate = target.plateText && (target.plateConfidence ?? 0) >= 90 ? ` ${target.plateText}` : "";
     const speed = target.estimatedSpeedMetresPerSecond !== null ? ` ${Math.max(0, target.estimatedSpeedMetresPerSecond * 3.6).toFixed(0)}KMH` : "";
-    return `${lock} ${confidence}${plate}${distance}${speed}`;
+    return `${lock}${plate}${speed}`;
   }, []);
 
   const drawHud = useCallback((ctx: CanvasRenderingContext2D, targets: HudTarget[], width: number, height: number) => {
@@ -168,8 +175,15 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOwnSp
       cropCtx.drawImage(video, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, cropCanvas.width, cropCanvas.height);
       const { recognize } = await import("tesseract.js");
       const result = await recognize(cropCanvas, "eng");
-      const plateText = cleanPlateText(result.data.text);
-      if (plateText) plateTextByTargetRef.current[target.id] = plateText;
+      const plateResult = cleanPlateText(result.data.text, result.data.confidence ?? 0);
+      if (plateResult) {
+        plateTextByTargetRef.current[target.id] = plateResult.text;
+        plateConfidenceByTargetRef.current[target.id] = plateResult.confidence;
+        plateMemoryRef.current[plateResult.text] = {
+          confidence: plateResult.confidence,
+          expiresAt: Date.now() + 5 * 60 * 1000
+        };
+      }
     } catch {
       plateOcrStatusRef.current = "unsupported";
       setError("Plate OCR could not run on this device. HUD vehicle boxes can still continue.");
@@ -183,6 +197,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOwnSp
       ocrTimerRef.current = window.setInterval(() => {
         const lockedTarget = hudTargetsRef.current.find((target) => target.lockState === "locked") ?? hudTargetsRef.current[0];
         if (!lockedTarget) return;
+        if (lockedTarget.plateText && (lockedTarget.plateConfidence ?? 0) >= 90) return;
         void recognisePlateText(video, lockedTarget);
       }, 2200);
     },
@@ -211,28 +226,58 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOwnSp
         .then((predictions) => {
           const videoWidth = video.videoWidth || 1;
           const videoHeight = video.videoHeight || 1;
-          const vehicles = predictions
-            .filter((prediction) => ["car", "truck", "bus", "motorcycle"].includes(prediction.class) && prediction.score > 0.45)
+          prunePlateMemory(plateMemoryRef.current);
+          const candidates = predictions
+            .filter((prediction) => ["car", "truck", "bus", "motorcycle"].includes(prediction.class) && prediction.score > 0.68)
             .map((prediction, index) => {
               const [x, y, width, height] = prediction.bbox;
               const centerX = x + width / 2;
-              const centered = centerX > videoWidth * 0.28 && centerX < videoWidth * 0.72;
+              const centerOffset = Math.abs(centerX / videoWidth - 0.5);
+              const area = (width * height) / (videoWidth * videoHeight);
+              const frontScore = prediction.score * 1.8 + area * 3 - centerOffset * 1.4;
+              const targetId = `candidate-${index}`;
+              const cachedPlate = plateTextByTargetRef.current[targetId] ?? null;
+              const memory = cachedPlate ? plateMemoryRef.current[cachedPlate] : undefined;
               return {
-                id: `target-${index}`,
+                id: targetId,
                 label: prediction.class,
                 confidence: prediction.score,
                 x: x / videoWidth,
                 y: y / videoHeight,
                 width: width / videoWidth,
                 height: height / videoHeight,
-                lockState: centered && index === 0 ? "locked" : "candidate",
-                plateText: plateTextByTargetRef.current[`target-${index}`] ?? null,
-                ...estimateTargetMotion(`target-${index}`, width, videoWidth, prediction.class)
-              } satisfies HudTarget;
+                lockState: "candidate",
+                plateText: cachedPlate,
+                plateConfidence: memory?.confidence ?? plateConfidenceByTargetRef.current[targetId] ?? null,
+                frontScore,
+                ...estimateTargetMotion(targetId, width, videoWidth, prediction.class)
+              } satisfies HudTarget & { frontScore: number };
             })
-            .sort((a, b) => b.width * b.height - a.width * a.height)
-            .slice(0, 5);
-          hudTargetsRef.current = vehicles.map((target, index) => ({ ...target, lockState: index === 0 && target.lockState === "locked" ? "locked" : "candidate" }));
+            .sort((a, b) => b.frontScore - a.frontScore);
+          const locked = chooseLockedTarget(candidates, lockedTargetRef.current);
+          if (locked) {
+            const lockedPlate = plateTextByTargetRef.current.locked;
+            const lockedPlateConfidence = plateConfidenceByTargetRef.current.locked ?? null;
+            const lockedWithPlate =
+              lockedPlate && (lockedPlateConfidence ?? 0) >= 90
+                ? { ...locked, plateText: lockedPlate, plateConfidence: lockedPlateConfidence }
+                : locked;
+            lockedTargetRef.current = lockedWithPlate;
+            lockedTargetMissesRef.current = 0;
+            if (lockedWithPlate.plateText) {
+              plateTextByTargetRef.current.locked = lockedWithPlate.plateText;
+              if (lockedWithPlate.plateConfidence !== null) plateConfidenceByTargetRef.current.locked = lockedWithPlate.plateConfidence;
+            }
+          } else if (lockedTargetRef.current && lockedTargetMissesRef.current < 4) {
+            lockedTargetMissesRef.current += 1;
+          } else {
+            lockedTargetRef.current = null;
+            lockedTargetMissesRef.current = 0;
+          }
+          const vehicles = lockedTargetRef.current
+            ? [lockedTargetRef.current as TrackableHudTarget, ...candidates.filter((candidate) => trackingScore(candidate, lockedTargetRef.current as HudTarget) < 0.34).slice(0, 2)]
+            : candidates.slice(0, 3);
+          hudTargetsRef.current = vehicles.map((target) => stripFrontScore(target));
           if (hudTargetsRef.current.length) hudFramesRef.current.push({ timestamp: Date.now(), targets: hudTargetsRef.current });
           setHudTargets(hudTargetsRef.current);
         })
@@ -319,7 +364,10 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOwnSp
     setHudTargets([]);
     hudTargetsRef.current = [];
     plateTextByTargetRef.current = {};
+    plateConfidenceByTargetRef.current = {};
     targetEstimateHistoryRef.current = {};
+    lockedTargetRef.current = null;
+    lockedTargetMissesRef.current = 0;
     const recorder = recorderRef.current;
     const stopped = new Promise<Blob | null>((resolve) => {
       if (!recorder || recorder.state === "inactive") {
@@ -351,11 +399,90 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-function cleanPlateText(rawText: string): string | null {
+type TrackableHudTarget = HudTarget & { frontScore: number };
+
+function chooseLockedTarget(candidates: TrackableHudTarget[], previous: HudTarget | null): TrackableHudTarget | null {
+  if (!candidates.length) return null;
+  const matchingPrevious = previous
+    ? candidates
+        .map((candidate) => ({ candidate, score: trackingScore(candidate, previous) }))
+        .filter((match) => match.score > 0.34)
+        .sort((a, b) => b.score - a.score)[0]?.candidate
+    : null;
+  const chosen = matchingPrevious ?? candidates[0];
+  const smoothed = previous && matchingPrevious ? smoothTarget(matchingPrevious, previous) : chosen;
+  return {
+    ...smoothed,
+    id: "locked",
+    lockState: "locked",
+    plateText: previous?.plateText && (previous.plateConfidence ?? 0) >= 90 ? previous.plateText : smoothed.plateText,
+    plateConfidence: previous?.plateText && (previous.plateConfidence ?? 0) >= 90 ? previous.plateConfidence : smoothed.plateConfidence,
+    frontScore: chosen.frontScore
+  };
+}
+
+function trackingScore(candidate: HudTarget, previous: HudTarget): number {
+  const candidateCenterX = candidate.x + candidate.width / 2;
+  const candidateCenterY = candidate.y + candidate.height / 2;
+  const previousCenterX = previous.x + previous.width / 2;
+  const previousCenterY = previous.y + previous.height / 2;
+  const centerDistance = Math.hypot(candidateCenterX - previousCenterX, candidateCenterY - previousCenterY);
+  return boxIoU(candidate, previous) * 0.75 + Math.max(0, 1 - centerDistance * 3) * 0.25;
+}
+
+function smoothTarget(candidate: TrackableHudTarget, previous: HudTarget): TrackableHudTarget {
+  const alpha = 0.38;
+  return {
+    ...candidate,
+    x: lerp(previous.x, candidate.x, alpha),
+    y: lerp(previous.y, candidate.y, alpha),
+    width: lerp(previous.width, candidate.width, alpha),
+    height: lerp(previous.height, candidate.height, alpha),
+    estimatedDistanceMetres: smoothNullable(previous.estimatedDistanceMetres, candidate.estimatedDistanceMetres, alpha),
+    estimatedCarLengthsAhead: smoothNullable(previous.estimatedCarLengthsAhead, candidate.estimatedCarLengthsAhead, alpha),
+    estimatedSpeedMetresPerSecond: smoothNullable(previous.estimatedSpeedMetresPerSecond, candidate.estimatedSpeedMetresPerSecond, alpha),
+    relativeSpeedMetresPerSecond: smoothNullable(previous.relativeSpeedMetresPerSecond, candidate.relativeSpeedMetresPerSecond, alpha)
+  };
+}
+
+function stripFrontScore(target: TrackableHudTarget): HudTarget {
+  const { frontScore: _frontScore, ...hudTarget } = target;
+  return hudTarget;
+}
+
+function boxIoU(a: HudTarget, b: HudTarget): number {
+  const left = Math.max(a.x, b.x);
+  const top = Math.max(a.y, b.y);
+  const right = Math.min(a.x + a.width, b.x + b.width);
+  const bottom = Math.min(a.y + a.height, b.y + b.height);
+  const intersection = Math.max(0, right - left) * Math.max(0, bottom - top);
+  const union = a.width * a.height + b.width * b.height - intersection;
+  return union > 0 ? intersection / union : 0;
+}
+
+function lerp(from: number, to: number, alpha: number): number {
+  return from + (to - from) * alpha;
+}
+
+function smoothNullable(from: number | null, to: number | null, alpha: number): number | null {
+  if (from === null) return to;
+  if (to === null) return from;
+  return lerp(from, to, alpha);
+}
+
+function prunePlateMemory(memory: Record<string, PlateMemory>): void {
+  const now = Date.now();
+  Object.entries(memory).forEach(([plate, entry]) => {
+    if (entry.expiresAt < now) delete memory[plate];
+  });
+}
+
+function cleanPlateText(rawText: string, confidence: number): { text: string; confidence: number } | null {
+  if (confidence < 90) return null;
   const candidates = rawText
     .toUpperCase()
     .split(/\s+/)
     .map((part) => part.replace(/[^A-Z0-9]/g, ""))
     .filter((part) => part.length >= 3 && part.length <= 10 && /[A-Z]/.test(part) && /\d/.test(part));
-  return candidates[0] ?? null;
+  return candidates[0] ? { text: candidates[0], confidence } : null;
 }
