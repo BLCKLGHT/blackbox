@@ -27,7 +27,7 @@ export function ExportButtons({ session }: { session: DriveSession }) {
           onClick={async () => {
             if (!session.videoBlobId) return;
             const blob = await getVideoBlob(session.videoBlobId);
-            if (blob) downloadBlob(blob, `${base}-video.webm`);
+            if (blob) downloadBlob(blob, `${base}-video.${blob.type.includes("mp4") ? "mp4" : "webm"}`);
           }}
           disabled={!session.videoBlobId}
         >

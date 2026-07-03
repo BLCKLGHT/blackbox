@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/AppShell";
 import { DriveControls } from "@/components/DriveControls";
@@ -11,19 +11,36 @@ import { useDriveSession } from "@/hooks/useDriveSession";
 
 export default function DrivePage() {
   const drive = useDriveSession();
-  const startedRef = useRef(false);
-
-  useEffect(() => {
-    if (startedRef.current) return;
-    startedRef.current = true;
-    drive.start().catch(console.error);
-  }, []);
+  const [hasStarted, setHasStarted] = useState(false);
+  const [isStarting, setIsStarting] = useState(false);
 
   const latestMagnitude = drive.currentMotion?.magnitude ?? 0;
+
+  async function beginRecording() {
+    setIsStarting(true);
+    setHasStarted(true);
+    await drive.start();
+    setIsStarting(false);
+  }
 
   return (
     <AppShell>
       <div className="space-y-4">
+        {!hasStarted ? (
+          <section className="rounded-lg border border-signal-blue/50 bg-cockpit-900 p-5 shadow-glow">
+            <h1 className="text-2xl font-black">Ready to Record</h1>
+            <p className="mt-2 text-sm leading-6 text-slate-300">
+              Tap Begin Recording to request camera, location, motion, and gyro permissions. On iPhone this tap is required before recording can start.
+            </p>
+            <button
+              className="touch-target mt-5 w-full rounded-lg bg-signal-blue px-5 py-4 text-lg font-black text-cockpit-950"
+              disabled={isStarting}
+              onClick={() => void beginRecording()}
+            >
+              {isStarting ? "Starting..." : "Begin Recording"}
+            </button>
+          </section>
+        ) : null}
         <RecordingCockpit
           elapsed={drive.elapsed}
           gpsSamples={drive.gpsTrail}
@@ -58,7 +75,20 @@ export default function DrivePage() {
         <section className="rounded-lg border border-cockpit-line bg-cockpit-900 p-3 text-sm text-slate-400">
           GPS accuracy: {drive.currentGps?.accuracy ? `${drive.currentGps.accuracy.toFixed(0)}m` : "Waiting for fix"}
         </section>
-        {drive.isRecording ? <DriveControls onMarkEvent={drive.markEvent} onStop={() => void drive.stop()} /> : <Link href="/" className="block rounded-lg bg-cockpit-800 p-4 text-center font-bold">Back Home</Link>}
+        {drive.isRecording ? (
+          <DriveControls onMarkEvent={drive.markEvent} onStop={() => void drive.stop()} />
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2">
+            {hasStarted ? (
+              <button className="touch-target rounded-lg bg-signal-blue p-4 text-center font-black text-cockpit-950" disabled={isStarting} onClick={() => void beginRecording()}>
+                {isStarting ? "Starting..." : "Try Begin Recording Again"}
+              </button>
+            ) : null}
+            <Link href="/" className="touch-target block rounded-lg bg-cockpit-800 p-4 text-center font-bold">
+              Back Home
+            </Link>
+          </div>
+        )}
       </div>
     </AppShell>
   );

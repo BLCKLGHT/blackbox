@@ -10,6 +10,13 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean) {
   const [error, setError] = useState<string | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
+  const mimeTypeRef = useRef("video/webm");
+
+  const getSupportedMimeType = useCallback(() => {
+    if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") return "";
+    const candidates = ["video/mp4;codecs=h264", "video/mp4", "video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
+    return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) ?? "";
+  }, []);
 
   const start = useCallback(async () => {
     if (!navigator.mediaDevices?.getUserMedia) {
@@ -29,7 +36,9 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean) {
         return true;
       }
 
-      const recorder = new MediaRecorder(mediaStream);
+      const mimeType = getSupportedMimeType();
+      const recorder = mimeType ? new MediaRecorder(mediaStream, { mimeType }) : new MediaRecorder(mediaStream);
+      mimeTypeRef.current = recorder.mimeType || mimeType || "video/webm";
       chunksRef.current = [];
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0) chunksRef.current.push(event.data);
@@ -47,10 +56,10 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean) {
     const recorder = recorderRef.current;
     const stopped = new Promise<Blob | null>((resolve) => {
       if (!recorder || recorder.state === "inactive") {
-        resolve(chunksRef.current.length ? new Blob(chunksRef.current, { type: "video/webm" }) : null);
+        resolve(chunksRef.current.length ? new Blob(chunksRef.current, { type: mimeTypeRef.current }) : null);
         return;
       }
-      recorder.onstop = () => resolve(chunksRef.current.length ? new Blob(chunksRef.current, { type: recorder.mimeType || "video/webm" }) : null);
+      recorder.onstop = () => resolve(chunksRef.current.length ? new Blob(chunksRef.current, { type: recorder.mimeType || mimeTypeRef.current }) : null);
       recorder.stop();
     });
     stream?.getTracks().forEach((track) => track.stop());

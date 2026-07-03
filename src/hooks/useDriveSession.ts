@@ -34,9 +34,12 @@ export function useDriveSession() {
     const started = createSession(settings.retentionHours);
     setSession(started);
     setWarnings([]);
-    const videoStarted = await video.start();
+    setElapsed(0);
+    setGpsTrail([]);
+    const videoPromise = video.start();
     const geoStarted = geo.start();
-    const motionStarted = await motion.start();
+    const motionPromise = motion.start();
+    const [videoStarted, motionStarted] = await Promise.all([videoPromise, motionPromise]);
     const nextWarnings = [video.error, geo.error, motion.error].filter((warning): warning is string => Boolean(warning));
     if (!videoStarted) nextWarnings.push("Camera/video unavailable. Partial GPS and motion recording may continue.");
     if (!geoStarted) nextWarnings.push("Location unavailable. Video and motion can still continue.");
