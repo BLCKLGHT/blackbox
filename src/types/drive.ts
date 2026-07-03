@@ -1,6 +1,19 @@
 export type ImpactSensitivity = "low" | "medium" | "high";
 export type VideoQuality = "low" | "medium" | "high";
 export type RetentionHours = 24 | 48 | 72;
+export type CameraLens = "auto" | "0.5x" | "1x" | "3x";
+
+export interface HudTarget {
+  id: string;
+  label: string;
+  confidence: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  lockState: "locked" | "candidate";
+  plateText: string | null;
+}
 
 export interface GpsSample {
   timestamp: number;

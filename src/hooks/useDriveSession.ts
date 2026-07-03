@@ -10,6 +10,12 @@ import { useGeolocationRecorder } from "./useGeolocationRecorder";
 import { useHighImpactDetection } from "./useHighImpactDetection";
 import { useMotionRecorder } from "./useMotionRecorder";
 import { useVideoRecorder } from "./useVideoRecorder";
+import type { CameraLens } from "@/types/drive";
+
+type StartDriveOptions = {
+  cameraLens: CameraLens;
+  hudEnabled: boolean;
+};
 
 export function useDriveSession() {
   const router = useRouter();
@@ -30,13 +36,13 @@ export function useDriveSession() {
   }, []);
   const detectImpact = useHighImpactDetection(getImpactThreshold(settings.impactSensitivity), addImpactEvent);
 
-  const start = useCallback(async () => {
+  const start = useCallback(async (options: StartDriveOptions) => {
     const started = createSession(settings.retentionHours);
     setSession(started);
     setWarnings([]);
     setElapsed(0);
     setGpsTrail([]);
-    const videoPromise = video.start();
+    const videoPromise = video.start(options);
     const geoStarted = geo.start();
     const motionPromise = motion.start();
     const [videoStarted, motionStarted] = await Promise.all([videoPromise, motionPromise]);
@@ -119,6 +125,7 @@ export function useDriveSession() {
     currentMotion: motion.latestMotion,
     currentOrientation: motion.latestOrientation,
     stream: video.stream,
+    hudTargets: video.hudTargets,
     videoSupported: video.recordingSupported,
     warnings: [...warnings, video.error, geo.error, motion.error].filter((warning): warning is string => Boolean(warning)),
     highImpactEvents: events,

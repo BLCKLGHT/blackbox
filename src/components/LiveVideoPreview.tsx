@@ -1,8 +1,19 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import type { HudTarget } from "@/types/drive";
 
-export function LiveVideoPreview({ stream, prominent = false, compact = false }: { stream: MediaStream | null; prominent?: boolean; compact?: boolean }) {
+export function LiveVideoPreview({
+  stream,
+  prominent = false,
+  compact = false,
+  hudTargets = []
+}: {
+  stream: MediaStream | null;
+  prominent?: boolean;
+  compact?: boolean;
+  hudTargets?: HudTarget[];
+}) {
   const ref = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
@@ -23,6 +34,26 @@ export function LiveVideoPreview({ stream, prominent = false, compact = false }:
       ) : (
         <div className="flex h-full items-center justify-center px-6 text-center text-sm text-slate-500">Camera preview will appear after permission is granted.</div>
       )}
+      {hudTargets.length ? (
+        <div className="pointer-events-none absolute inset-0">
+          {hudTargets.map((target) => (
+            <div
+              key={target.id}
+              className={`absolute border-2 ${target.lockState === "locked" ? "border-signal-green text-signal-green" : "border-signal-amber text-signal-amber"}`}
+              style={{
+                left: `${target.x * 100}%`,
+                top: `${target.y * 100}%`,
+                width: `${target.width * 100}%`,
+                height: `${target.height * 100}%`
+              }}
+            >
+              <span className={`absolute -top-7 left-0 whitespace-nowrap rounded-sm px-2 py-1 text-[10px] font-black uppercase ${target.lockState === "locked" ? "bg-signal-green text-cockpit-950" : "bg-signal-amber text-cockpit-950"}`}>
+                {target.lockState === "locked" ? "LOCK" : "VEH"} {Math.round(target.confidence * 100)}% {target.plateText ?? ""}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -8,19 +8,24 @@ import { ImpactRiskBadge } from "@/components/ImpactRiskBadge";
 import { MotionGauge } from "@/components/MotionGauge";
 import { RecordingCockpit } from "@/components/RecordingCockpit";
 import { useDriveSession } from "@/hooks/useDriveSession";
+import type { CameraLens } from "@/types/drive";
+
+const CAMERA_LENSES: CameraLens[] = ["auto", "0.5x", "1x", "3x"];
 
 export default function DrivePage() {
   const drive = useDriveSession();
   const [hasStarted, setHasStarted] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [condensed, setCondensed] = useState(false);
+  const [cameraLens, setCameraLens] = useState<CameraLens>("auto");
+  const [hudEnabled, setHudEnabled] = useState(false);
 
   const latestMagnitude = drive.currentMotion?.magnitude ?? 0;
 
   async function beginRecording() {
     setIsStarting(true);
     setHasStarted(true);
-    await drive.start();
+    await drive.start({ cameraLens, hudEnabled });
     setIsStarting(false);
   }
 
@@ -39,6 +44,30 @@ export default function DrivePage() {
             <p className="mt-2 text-sm leading-6 text-slate-300">
               Tap Begin Recording to request camera, location, motion, and gyro permissions. On iPhone this tap is required before recording can start.
             </p>
+            <div className="mt-5 space-y-4">
+              <div>
+                <div className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">Rear camera lens</div>
+                <div className="grid grid-cols-4 gap-2">
+                  {CAMERA_LENSES.map((lens) => (
+                    <button
+                      key={lens}
+                      className={`touch-target rounded-md border px-2 py-2 text-sm font-black ${cameraLens === lens ? "border-signal-blue bg-signal-blue text-cockpit-950" : "border-cockpit-line bg-cockpit-950 text-slate-200"}`}
+                      onClick={() => setCameraLens(lens)}
+                    >
+                      {lens === "auto" ? "Auto" : lens}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-2 text-xs leading-5 text-slate-500">iPhone browsers expose lenses differently. If exact lens switching is unavailable, Black Box uses the closest rear camera/zoom supported.</p>
+              </div>
+              <label className="flex items-center justify-between gap-4 rounded-lg border border-cockpit-line bg-cockpit-950 p-3">
+                <span>
+                  <span className="block font-bold">HUD vehicle targeting</span>
+                  <span className="block text-xs leading-5 text-slate-500">Detects vehicles, draws green/yellow target boxes, and records boxes into the saved clip. Plate OCR is not enabled in this browser MVP.</span>
+                </span>
+                <input type="checkbox" checked={hudEnabled} onChange={(event) => setHudEnabled(event.target.checked)} />
+              </label>
+            </div>
             <button
               className="touch-target mt-5 w-full rounded-lg bg-signal-blue px-5 py-4 text-lg font-black text-cockpit-950"
               disabled={isStarting}
@@ -55,6 +84,7 @@ export default function DrivePage() {
           latestMotion={drive.currentMotion}
           latestOrientation={drive.currentOrientation}
           stream={drive.stream}
+          hudTargets={drive.hudTargets}
           compact={condensed}
         />
         {drive.videoSupported ? null : (
