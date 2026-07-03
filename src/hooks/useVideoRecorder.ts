@@ -8,6 +8,8 @@ type VideoRecorderStartOptions = {
   cameraLens: CameraLens;
   hudEnabled: boolean;
   plateOcrEnabled: boolean;
+  hudSensitivityAuto: boolean;
+  hudSensitivity: number;
 };
 
 type VehicleDetector = {
@@ -48,6 +50,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOwnSp
   const compositeStreamRef = useRef<MediaStream | null>(null);
   const detectorStatusRef = useRef<"idle" | "loading" | "ready" | "unsupported">("idle");
   const plateOcrStatusRef = useRef<"idle" | "ready" | "unsupported">("idle");
+  const hudSensitivityOptionsRef = useRef({ auto: true, sensitivity: 55 });
 
   const getSupportedMimeType = useCallback(() => {
     if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") return "";
@@ -227,8 +230,10 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOwnSp
           const videoWidth = video.videoWidth || 1;
           const videoHeight = video.videoHeight || 1;
           prunePlateMemory(plateMemoryRef.current);
-          const candidates = predictions
-            .filter((prediction) => ["car", "truck", "bus", "motorcycle"].includes(prediction.class) && prediction.score > 0.68)
+          const vehiclePredictions = predictions.filter((prediction) => ["car", "truck", "bus", "motorcycle"].includes(prediction.class));
+          const confidenceThreshold = getHudConfidenceThreshold(vehiclePredictions.map((prediction) => prediction.score), hudSensitivityOptionsRef.current);
+          const candidates = vehiclePredictions
+            .filter((prediction) => prediction.score >= confidenceThreshold)
             .map((prediction, index) => {
               const [x, y, width, height] = prediction.bbox;
               const centerX = x + width / 2;
@@ -329,6 +334,10 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOwnSp
       await applyCameraLens(mediaStream, options.cameraLens);
       setStream(mediaStream);
       hudFramesRef.current = [];
+      hudSensitivityOptionsRef.current = {
+        auto: options.hudSensitivityAuto,
+        sensitivity: options.hudSensitivity
+      };
 
       if (typeof MediaRecorder === "undefined") {
         setRecordingSupported(false);
@@ -475,6 +484,19 @@ function prunePlateMemory(memory: Record<string, PlateMemory>): void {
   Object.entries(memory).forEach(([plate, entry]) => {
     if (entry.expiresAt < now) delete memory[plate];
   });
+}
+
+function getHudConfidenceThreshold(scores: number[], options: { auto: boolean; sensitivity: number }): number {
+  if (!options.auto) {
+    return clamp(0.84 - options.sensitivity * 0.0042, 0.42, 0.84);
+  }
+  if (!scores.length) return 0.48;
+  const sorted = [...scores].sort((a, b) => b - a);
+  const best = sorted[0];
+  const second = sorted[1] ?? 0;
+  const crowdedPenalty = sorted.length > 4 ? 0.06 : sorted.length > 2 ? 0.03 : 0;
+  const separationBonus = Math.max(0, best - second) * 0.25;
+  return clamp(best * 0.72 + crowdedPenalty - separationBonus, 0.46, 0.78);
 }
 
 function cleanPlateText(rawText: string, confidence: number): { text: string; confidence: number } | null {

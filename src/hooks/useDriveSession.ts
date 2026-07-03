@@ -16,6 +16,8 @@ type StartDriveOptions = {
   cameraLens: CameraLens;
   hudEnabled: boolean;
   plateOcrEnabled: boolean;
+  hudSensitivityAuto: boolean;
+  hudSensitivity: number;
 };
 
 export function useDriveSession() {

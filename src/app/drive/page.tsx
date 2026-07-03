@@ -21,13 +21,15 @@ export default function DrivePage() {
   const [cameraLens, setCameraLens] = useState<CameraLens>("auto");
   const [hudEnabled, setHudEnabled] = useState(false);
   const [plateOcrEnabled, setPlateOcrEnabled] = useState(false);
+  const [hudSensitivityAuto, setHudSensitivityAuto] = useState(true);
+  const [hudSensitivity, setHudSensitivity] = useState(55);
 
   const latestMagnitude = drive.currentMotion?.magnitude ?? 0;
 
   async function beginRecording() {
     setIsStarting(true);
     setHasStarted(true);
-    await drive.start({ cameraLens, hudEnabled, plateOcrEnabled: hudEnabled && plateOcrEnabled });
+    await drive.start({ cameraLens, hudEnabled, plateOcrEnabled: hudEnabled && plateOcrEnabled, hudSensitivityAuto, hudSensitivity });
     setIsStarting(false);
   }
 
@@ -84,6 +86,32 @@ export default function DrivePage() {
                   </span>
                   <input type="checkbox" disabled={!hudEnabled} checked={plateOcrEnabled} onChange={(event) => setPlateOcrEnabled(event.target.checked)} />
                 </label>
+                <section className={`rounded-lg border p-3 ${hudEnabled ? "border-cockpit-line bg-cockpit-950" : "border-cockpit-line bg-cockpit-900 opacity-60"}`}>
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <div className="font-bold">HUD lock sensitivity</div>
+                      <div className="text-xs leading-5 text-slate-500">Lower is stricter. Higher catches weaker targets. Auto adapts to the current traffic scene.</div>
+                    </div>
+                    <label className="flex items-center gap-2 text-sm font-bold">
+                      Auto
+                      <input type="checkbox" disabled={!hudEnabled} checked={hudSensitivityAuto} onChange={(event) => setHudSensitivityAuto(event.target.checked)} />
+                    </label>
+                  </div>
+                  <input
+                    className="mt-3 w-full"
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={hudSensitivity}
+                    disabled={!hudEnabled || hudSensitivityAuto}
+                    onChange={(event) => setHudSensitivity(Number(event.target.value))}
+                  />
+                  <div className="mt-1 flex justify-between text-xs text-slate-500">
+                    <span>Strict</span>
+                    <span>{hudSensitivityAuto ? "Auto" : `${hudSensitivity}%`}</span>
+                    <span>Permissive</span>
+                  </div>
+                </section>
               </div>
             </div>
             <button
