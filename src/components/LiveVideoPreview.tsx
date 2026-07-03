@@ -1,27 +1,45 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import type { HudTarget } from "@/types/drive";
+import { useEffect, useMemo, useRef } from "react";
+import { metresPerSecondToKmh } from "@/lib/drive-utils";
+import type { GpsSample, HudTarget, WeatherInfo } from "@/types/drive";
 
 export function LiveVideoPreview({
   stream,
   prominent = false,
   compact = false,
-  hudTargets = []
+  hudTargets = [],
+  latestGps = null,
+  weather = null
 }: {
   stream: MediaStream | null;
   prominent?: boolean;
   compact?: boolean;
   hudTargets?: HudTarget[];
+  latestGps?: GpsSample | null;
+  weather?: WeatherInfo | null;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const locked = useMemo(() => hudTargets.find((target) => target.lockState === "locked") ?? null, [hudTargets]);
 
   useEffect(() => {
     if (ref.current) ref.current.srcObject = stream;
   }, [stream]);
 
+  async function enterFullscreen() {
+    const element = wrapperRef.current;
+    if (!element) return;
+    if (document.fullscreenElement) {
+      await document.exitFullscreen();
+      return;
+    }
+    await element.requestFullscreen?.();
+  }
+
   return (
     <div
+      ref={wrapperRef}
       className={`relative overflow-hidden rounded-lg border border-cockpit-line bg-black ${
         compact ? "h-36" : prominent ? "min-h-[420px] lg:min-h-[720px]" : "aspect-[9/16] max-h-[58vh]"
       }`}
@@ -29,6 +47,9 @@ export function LiveVideoPreview({
       <div className="absolute left-3 top-3 z-10 rounded-full border border-signal-red/60 bg-black/70 px-3 py-1 text-xs font-black uppercase tracking-wide text-signal-red">
         REC Camera
       </div>
+      <button className="absolute right-3 top-3 z-20 rounded-md border border-signal-blue/70 bg-black/70 px-3 py-1 text-xs font-black uppercase tracking-wide text-signal-blue" onClick={() => void enterFullscreen()}>
+        Full Screen
+      </button>
       {stream ? (
         <video ref={ref} autoPlay muted playsInline className="h-full w-full object-cover" />
       ) : (
@@ -56,6 +77,13 @@ export function LiveVideoPreview({
           ))}
         </div>
       ) : null}
+      <div className="pointer-events-none absolute bottom-3 left-3 z-10 max-w-[78%] rounded-md border border-signal-green/40 bg-black/70 p-2 font-mono text-[11px] font-bold uppercase leading-5 text-signal-green sm:text-xs">
+        <div>{metresPerSecondToKmh(latestGps?.speedMetresPerSecond).toFixed(0)} KMH</div>
+        <div>{new Date().toLocaleTimeString()}</div>
+        <div>{latestGps ? `${latestGps.latitude.toFixed(5)}, ${latestGps.longitude.toFixed(5)}` : "GPS --"}</div>
+        <div>{weather ? `${weather.temperatureCelsius?.toFixed(0) ?? "--"}C ${weather.summary}` : "WX --"}</div>
+        <div>{locked?.estimatedCarLengthsAhead !== null && locked?.estimatedCarLengthsAhead !== undefined ? `${locked.estimatedCarLengthsAhead.toFixed(1)} CAR LENGTHS` : "NO TARGET"}</div>
+      </div>
     </div>
   );
 }

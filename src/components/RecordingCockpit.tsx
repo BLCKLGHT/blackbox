@@ -3,7 +3,7 @@ import { LiveVideoPreview } from "@/components/LiveVideoPreview";
 import { RecordingTimer } from "@/components/RecordingTimer";
 import { RouteMap } from "@/components/RouteMap";
 import { SpeedDisplay } from "@/components/SpeedDisplay";
-import type { GpsSample, HudTarget, MotionSample, OrientationSample } from "@/types/drive";
+import type { GpsSample, HudTarget, MotionSample, OrientationSample, WeatherInfo } from "@/types/drive";
 
 export function RecordingCockpit({
   elapsed,
@@ -13,6 +13,7 @@ export function RecordingCockpit({
   latestOrientation,
   stream,
   hudTargets,
+  weather,
   compact = false
 }: {
   elapsed: number;
@@ -22,6 +23,7 @@ export function RecordingCockpit({
   latestOrientation: OrientationSample | null;
   stream: MediaStream | null;
   hudTargets: HudTarget[];
+  weather: WeatherInfo | null;
   compact?: boolean;
 }) {
   return (
@@ -48,7 +50,7 @@ export function RecordingCockpit({
           <FlightGyroDisplay orientation={latestOrientation} motion={latestMotion} compact={compact} />
           <RouteMap samples={gpsSamples} latest={latestGps} compact={compact} />
         </div>
-        <LiveVideoPreview stream={stream} prominent compact={compact} hudTargets={hudTargets} />
+        <LiveVideoPreview stream={stream} prominent compact={compact} hudTargets={hudTargets} latestGps={latestGps} weather={weather} />
       </div>
     </section>
   );

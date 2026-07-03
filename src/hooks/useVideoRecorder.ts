@@ -2,7 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import { getVideoConstraints } from "@/lib/settings";
-import type { CameraLens, HudFrame, HudTarget, VideoQuality } from "@/types/drive";
+import type { CameraLens, HudFrame, HudOverlayMetrics, HudTarget, VideoQuality } from "@/types/drive";
 
 type VideoRecorderStartOptions = {
   cameraLens: CameraLens;
@@ -26,7 +26,7 @@ type PlateMemory = {
   expiresAt: number;
 };
 
-export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOwnSpeedMetresPerSecond: () => number | null) {
+export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverlayMetrics: () => HudOverlayMetrics) {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [recordingSupported, setRecordingSupported] = useState(true);
   const [hudTargets, setHudTargets] = useState<HudTarget[]>([]);
@@ -85,6 +85,28 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOwnSp
     return `${lock}${plate}${speed}`;
   }, []);
 
+  const drawTelemetryOverlay = useCallback((ctx: CanvasRenderingContext2D, metrics: HudOverlayMetrics, targets: HudTarget[], width: number, height: number) => {
+    const locked = targets.find((target) => target.lockState === "locked") ?? null;
+    const speed = metrics.ownSpeedMetresPerSecond !== null ? `${(metrics.ownSpeedMetresPerSecond * 3.6).toFixed(0)} KMH` : "-- KMH";
+    const time = new Date(metrics.timestamp).toLocaleTimeString();
+    const coords = metrics.latitude !== null && metrics.longitude !== null ? `${metrics.latitude.toFixed(5)}, ${metrics.longitude.toFixed(5)}` : "GPS --";
+    const weather = metrics.weather ? `${metrics.weather.temperatureCelsius?.toFixed(0) ?? "--"}C ${metrics.weather.summary}` : "WX --";
+    const gap = locked?.estimatedCarLengthsAhead !== null && locked?.estimatedCarLengthsAhead !== undefined ? `${locked.estimatedCarLengthsAhead.toFixed(1)} CAR LENGTHS` : "NO TARGET";
+    const lines = [speed, time, coords, weather, gap];
+
+    ctx.save();
+    ctx.font = `${Math.max(18, width * 0.018)}px monospace`;
+    ctx.textBaseline = "top";
+    const lineHeight = Math.max(24, width * 0.024);
+    const boxWidth = Math.max(...lines.map((line) => ctx.measureText(line).width)) + 24;
+    const boxHeight = lineHeight * lines.length + 16;
+    ctx.fillStyle = "rgba(5, 6, 7, 0.68)";
+    ctx.fillRect(14, 14, boxWidth, boxHeight);
+    ctx.fillStyle = "#4ade80";
+    lines.forEach((line, index) => ctx.fillText(line, 26, 22 + index * lineHeight));
+    ctx.restore();
+  }, []);
+
   const drawHud = useCallback((ctx: CanvasRenderingContext2D, targets: HudTarget[], width: number, height: number) => {
     ctx.save();
     ctx.lineWidth = Math.max(3, width * 0.003);
@@ -106,7 +128,8 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOwnSp
       ctx.fillText(label, x + 7, labelY + 19);
     });
     ctx.restore();
-  }, [buildHudLabel]);
+    drawTelemetryOverlay(ctx, getOverlayMetrics(), targets, width, height);
+  }, [buildHudLabel, drawTelemetryOverlay, getOverlayMetrics]);
 
   const estimateTargetMotion = useCallback(
     (targetId: string, bboxWidthPixels: number, videoWidth: number, label: string): Pick<HudTarget, "estimatedDistanceMetres" | "estimatedCarLengthsAhead" | "estimatedSpeedMetresPerSecond" | "relativeSpeedMetresPerSecond"> => {
@@ -126,7 +149,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOwnSp
 
       const now = Date.now();
       const previous = targetEstimateHistoryRef.current[targetId];
-      const ownSpeed = getOwnSpeedMetresPerSecond() ?? 0;
+      const ownSpeed = getOverlayMetrics().ownSpeedMetresPerSecond ?? 0;
       let relativeSpeedMetresPerSecond: number | null = null;
       let estimatedSpeedMetresPerSecond: number | null = null;
       if (previous) {
@@ -143,7 +166,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOwnSp
         relativeSpeedMetresPerSecond
       };
     },
-    [getOwnSpeedMetresPerSecond]
+    [getOverlayMetrics]
   );
 
   const recognisePlateText = useCallback(async (video: HTMLVideoElement, target: HudTarget) => {
@@ -237,9 +260,15 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOwnSp
             .map((prediction, index) => {
               const [x, y, width, height] = prediction.bbox;
               const centerX = x + width / 2;
+              const left = x / videoWidth;
+              const right = (x + width) / videoWidth;
+              const centerRatio = centerX / videoWidth;
               const centerOffset = Math.abs(centerX / videoWidth - 0.5);
               const area = (width * height) / (videoWidth * videoHeight);
-              const frontScore = prediction.score * 1.8 + area * 3 - centerOffset * 1.4;
+              const inForwardCorridor = centerRatio > 0.24 && centerRatio < 0.76;
+              const veeringIntoMiddle = right > 0.5 && left < 0.84;
+              const concernBoost = inForwardCorridor ? 0.45 : veeringIntoMiddle ? 0.15 : -0.55;
+              const frontScore = prediction.score * 1.8 + area * 3 - centerOffset * 1.9 + concernBoost;
               const targetId = `candidate-${index}`;
               const cachedPlate = plateTextByTargetRef.current[targetId] ?? null;
               const memory = cachedPlate ? plateMemoryRef.current[cachedPlate] : undefined;
@@ -257,6 +286,11 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOwnSp
                 frontScore,
                 ...estimateTargetMotion(targetId, width, videoWidth, prediction.class)
               } satisfies HudTarget & { frontScore: number };
+            })
+            .filter((candidate) => {
+              const center = candidate.x + candidate.width / 2;
+              const rightEdge = candidate.x + candidate.width;
+              return center > 0.2 && center < 0.8 || (rightEdge > 0.5 && candidate.x < 0.84);
             })
             .sort((a, b) => b.frontScore - a.frontScore);
           const locked = chooseLockedTarget(candidates, lockedTargetRef.current);

@@ -1,11 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { buildSummary, createId, createSession } from "@/lib/drive-utils";
 import { getImpactThreshold, loadSettings } from "@/lib/settings";
 import { saveSession, saveVideoBlob } from "@/lib/storage";
-import type { DriveSession, HighImpactEvent, ManualMarker } from "@/types/drive";
+import type { DriveSession, HighImpactEvent, HudOverlayMetrics, ManualMarker, WeatherInfo } from "@/types/drive";
 import { useGeolocationRecorder } from "./useGeolocationRecorder";
 import { useHighImpactDetection } from "./useHighImpactDetection";
 import { useMotionRecorder } from "./useMotionRecorder";
@@ -25,7 +25,19 @@ export function useDriveSession() {
   const settings = useMemo(() => loadSettings(), []);
   const geo = useGeolocationRecorder();
   const motion = useMotionRecorder();
-  const video = useVideoRecorder(settings.videoQuality, settings.audioRecording, () => geo.latestGpsRef.current?.speedMetresPerSecond ?? null);
+  const [weather, setWeather] = useState<WeatherInfo | null>(null);
+  const lastWeatherFetchRef = useRef({ timestamp: 0, latitude: 0, longitude: 0 });
+  const getOverlayMetrics = useCallback(
+    (): HudOverlayMetrics => ({
+      timestamp: Date.now(),
+      ownSpeedMetresPerSecond: geo.latestGpsRef.current?.speedMetresPerSecond ?? null,
+      latitude: geo.latestGpsRef.current?.latitude ?? null,
+      longitude: geo.latestGpsRef.current?.longitude ?? null,
+      weather
+    }),
+    [geo.latestGpsRef, weather]
+  );
+  const video = useVideoRecorder(settings.videoQuality, settings.audioRecording, getOverlayMetrics);
   const [session, setSession] = useState<DriveSession>(() => createSession(settings.retentionHours));
   const [isRecording, setIsRecording] = useState(false);
   const [elapsed, setElapsed] = useState(0);
@@ -120,12 +132,35 @@ export function useDriveSession() {
     return () => window.clearInterval(timer);
   }, [detectImpact, events, geo.samplesRef, isRecording, manualMarkers, motion.motionSamplesRef, motion.orientationSamplesRef, session]);
 
+  useEffect(() => {
+    const latest = geo.latestGps;
+    if (!isRecording || !latest) return;
+    const now = Date.now();
+    const moved = Math.hypot(latest.latitude - lastWeatherFetchRef.current.latitude, latest.longitude - lastWeatherFetchRef.current.longitude) > 0.02;
+    if (now - lastWeatherFetchRef.current.timestamp < 10 * 60 * 1000 && !moved) return;
+    lastWeatherFetchRef.current.timestamp = now;
+    lastWeatherFetchRef.current.latitude = latest.latitude;
+    lastWeatherFetchRef.current.longitude = latest.longitude;
+    fetch(`https://api.open-meteo.com/v1/forecast?latitude=${latest.latitude}&longitude=${latest.longitude}&current=temperature_2m,weather_code,wind_speed_10m`)
+      .then((response) => response.json())
+      .then((data) => {
+        setWeather({
+          temperatureCelsius: typeof data?.current?.temperature_2m === "number" ? data.current.temperature_2m : null,
+          windKmh: typeof data?.current?.wind_speed_10m === "number" ? data.current.wind_speed_10m : null,
+          summary: weatherCodeLabel(data?.current?.weather_code),
+          observedAt: Date.now()
+        });
+      })
+      .catch(() => undefined);
+  }, [geo.latestGps, isRecording]);
+
   return {
     settings,
     session,
     isRecording,
     elapsed,
     currentGps: geo.latestGps,
+    weather,
     gpsTrail,
     currentMotion: motion.latestMotion,
     currentOrientation: motion.latestOrientation,
@@ -139,4 +174,16 @@ export function useDriveSession() {
     stop,
     markEvent
   };
+}
+
+function weatherCodeLabel(code: unknown): string {
+  if (typeof code !== "number") return "Weather";
+  if (code === 0) return "Clear";
+  if ([1, 2, 3].includes(code)) return "Clouds";
+  if ([45, 48].includes(code)) return "Fog";
+  if ([51, 53, 55, 56, 57].includes(code)) return "Drizzle";
+  if ([61, 63, 65, 66, 67, 80, 81, 82].includes(code)) return "Rain";
+  if ([71, 73, 75, 77, 85, 86].includes(code)) return "Snow";
+  if ([95, 96, 99].includes(code)) return "Storm";
+  return "Weather";
 }

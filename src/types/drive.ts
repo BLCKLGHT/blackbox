@@ -3,6 +3,21 @@ export type VideoQuality = "low" | "medium" | "high";
 export type RetentionHours = 24 | 48 | 72;
 export type CameraLens = "auto" | "0.5x" | "1x" | "3x";
 
+export interface WeatherInfo {
+  temperatureCelsius: number | null;
+  windKmh: number | null;
+  summary: string;
+  observedAt: number;
+}
+
+export interface HudOverlayMetrics {
+  timestamp: number;
+  ownSpeedMetresPerSecond: number | null;
+  latitude: number | null;
+  longitude: number | null;
+  weather: WeatherInfo | null;
+}
+
 export interface HudTarget {
   id: string;
   label: string;

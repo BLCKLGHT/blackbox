@@ -131,6 +131,7 @@ export default function DrivePage() {
           latestOrientation={drive.currentOrientation}
           stream={drive.stream}
           hudTargets={drive.hudTargets}
+          weather={drive.weather}
           compact={condensed}
         />
         {drive.videoSupported ? null : (
