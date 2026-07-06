@@ -1,6 +1,6 @@
 # Vehicle Detection Model
 
-Place a lightweight YOLO nano ONNX model here as:
+The app serves the lightweight YOLO nano ONNX model from:
 
 ```text
 public/models/yolov8n.onnx
@@ -20,3 +20,5 @@ You can override the path at deploy time with:
 ```text
 NEXT_PUBLIC_YOLO_MODEL_URL=/models/your-model.onnx
 ```
+
+PyTorch `.pt` checkpoints are useful for export/retraining, but the browser runtime does not use them. They are ignored by git to avoid deploying unused model artifacts.
