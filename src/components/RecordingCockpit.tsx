@@ -3,6 +3,7 @@ import { LiveVideoPreview } from "@/components/LiveVideoPreview";
 import { RecordingTimer } from "@/components/RecordingTimer";
 import { RouteMap } from "@/components/RouteMap";
 import { SpeedDisplay } from "@/components/SpeedDisplay";
+import { TargetDistancePanel } from "@/components/TargetDistancePanel";
 import type { GpsSample, HudTarget, MotionSample, OrientationSample, WeatherInfo } from "@/types/drive";
 
 export function RecordingCockpit({
@@ -43,23 +44,24 @@ export function RecordingCockpit({
           </div>
         </div>
       </div>
-      <div className={compact ? "grid gap-2" : "grid gap-3 lg:grid-cols-[minmax(280px,1.1fr)_minmax(320px,1.4fr)]"}>
-        <div className={compact ? "grid grid-cols-2 gap-2" : "grid gap-3 sm:grid-cols-2 lg:grid-cols-1"}>
-          <RecordingTimer seconds={elapsed} compact={compact} />
-          <SpeedDisplay speed={latestGps?.speedMetresPerSecond} compact={compact} />
-          <FlightGyroDisplay orientation={latestOrientation} motion={latestMotion} compact={compact} />
-          <RouteMap samples={gpsSamples} latest={latestGps} compact={compact} />
-        </div>
-        <LiveVideoPreview
-          stream={stream}
-          prominent
-          compact={compact}
-          hudTargets={hudTargets}
-          latestGps={latestGps}
-          latestMotion={latestMotion}
-          latestOrientation={latestOrientation}
-          weather={weather}
-        />
+      <LiveVideoPreview
+        stream={stream}
+        prominent
+        compact={compact}
+        hudTargets={hudTargets}
+        latestGps={latestGps}
+        latestMotion={latestMotion}
+        latestOrientation={latestOrientation}
+        weather={weather}
+      />
+      <div className={compact ? "grid grid-cols-[minmax(0,1.25fr)_minmax(104px,0.75fr)] gap-2" : "grid gap-3 md:grid-cols-[minmax(0,1.35fr)_minmax(180px,0.65fr)]"}>
+        <TargetDistancePanel targets={hudTargets} compact={compact} />
+        <SpeedDisplay speed={latestGps?.speedMetresPerSecond} compact={compact} />
+      </div>
+      <div className={compact ? "grid grid-cols-2 gap-2" : "grid gap-3 sm:grid-cols-3"}>
+        <RecordingTimer seconds={elapsed} compact={compact} />
+        <FlightGyroDisplay orientation={latestOrientation} motion={latestMotion} compact={compact} />
+        <RouteMap samples={gpsSamples} latest={latestGps} compact={compact} />
       </div>
     </section>
   );

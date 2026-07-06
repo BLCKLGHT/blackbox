@@ -7,7 +7,6 @@ import { DriveControls } from "@/components/DriveControls";
 import { ImpactRiskBadge } from "@/components/ImpactRiskBadge";
 import { MotionGauge } from "@/components/MotionGauge";
 import { RecordingCockpit } from "@/components/RecordingCockpit";
-import { TargetDistancePanel } from "@/components/TargetDistancePanel";
 import { useDriveSession } from "@/hooks/useDriveSession";
 import type { CameraLens } from "@/types/drive";
 
@@ -157,7 +156,6 @@ export default function DrivePage() {
           <ImpactRiskBadge eventCount={drive.highImpactEvents.length} latestMagnitude={latestMagnitude} compact={condensed} />
           <MotionGauge magnitude={latestMagnitude} compact={condensed} />
         </div>
-        <TargetDistancePanel targets={drive.hudTargets} compact={condensed} />
         <section className={`rounded-lg border border-cockpit-line bg-cockpit-900 text-sm text-slate-400 ${condensed ? "p-2" : "p-3"}`}>
           GPS accuracy: {drive.currentGps?.accuracy ? `${drive.currentGps.accuracy.toFixed(0)}m` : "Waiting for fix"}
         </section>
