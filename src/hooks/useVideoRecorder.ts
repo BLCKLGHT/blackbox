@@ -2,7 +2,8 @@
 
 import { useCallback, useRef, useState } from "react";
 import { getVideoConstraints } from "@/lib/settings";
-import type { CameraLens, HudFrame, HudOverlayMetrics, HudTarget, VideoQuality } from "@/types/drive";
+import { YoloVehicleDetector, type VehicleDetection } from "@/lib/yolo-vehicle-detector";
+import type { CameraLens, HudFrame, HudOverlayMetrics, HudTarget, VehicleClosingRisk, VehicleRelativeMotion, VehicleTrackEvidence, VideoQuality } from "@/types/drive";
 
 type VideoRecorderStartOptions = {
   cameraLens: CameraLens;
@@ -12,19 +13,38 @@ type VideoRecorderStartOptions = {
   hudSensitivity: number;
 };
 
-type VehicleDetector = {
-  detect: (input: HTMLVideoElement) => Promise<Array<{ bbox: [number, number, number, number]; class: string; score: number }>>;
-};
-
-type TargetEstimateHistory = {
-  distanceMetres: number;
-  timestamp: number;
-};
-
 type PlateMemory = {
   confidence: number;
   expiresAt: number;
 };
+
+type TrackedVehicle = {
+  id: string;
+  label: HudTarget["evidence"]["detectionClass"];
+  confidence: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  misses: number;
+  ageFrames: number;
+  createdAt: number;
+  lastSeenAt: number;
+  previousSeenAt: number | null;
+  lastEvidence: VehicleTrackEvidence | null;
+};
+
+type TrackUpdate = {
+  track: TrackedVehicle;
+  detection: VehicleDetection;
+  iouWithPrevious: number | null;
+};
+
+const YOLO_MODEL_NAME = "yolov8n-onnx";
+const DETECTION_INTERVAL_MS = 180;
+const TRACK_IOU_THRESHOLD = 0.24;
+const MAX_TRACK_MISSES = 8;
+const MAX_HUD_TARGETS = 4;
 
 export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverlayMetrics: () => HudOverlayMetrics) {
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -39,14 +59,14 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
   const detectionTimerRef = useRef<number | null>(null);
   const ocrTimerRef = useRef<number | null>(null);
   const ocrBusyRef = useRef(false);
-  const detectorRef = useRef<VehicleDetector | null>(null);
+  const detectorRef = useRef<YoloVehicleDetector | null>(null);
   const hudTargetsRef = useRef<HudTarget[]>([]);
-  const plateTextByTargetRef = useRef<Record<string, string>>({});
-  const plateConfidenceByTargetRef = useRef<Record<string, number>>({});
+  const tracksRef = useRef<TrackedVehicle[]>([]);
+  const nextTrackIdRef = useRef(1);
+  const lockedTrackIdRef = useRef<string | null>(null);
+  const plateTextByTrackRef = useRef<Record<string, string>>({});
+  const plateConfidenceByTrackRef = useRef<Record<string, number>>({});
   const plateMemoryRef = useRef<Record<string, PlateMemory>>({});
-  const targetEstimateHistoryRef = useRef<Record<string, TargetEstimateHistory>>({});
-  const lockedTargetRef = useRef<HudTarget | null>(null);
-  const lockedTargetMissesRef = useRef(0);
   const compositeStreamRef = useRef<MediaStream | null>(null);
   const detectorStatusRef = useRef<"idle" | "loading" | "ready" | "unsupported">("idle");
   const plateOcrStatusRef = useRef<"idle" | "ready" | "unsupported">("idle");
@@ -81,8 +101,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
   const buildHudLabel = useCallback((target: HudTarget) => {
     const lock = target.lockState === "locked" ? "LOCK" : "VEH";
     const plate = target.plateText && (target.plateConfidence ?? 0) >= 90 ? ` ${target.plateText}` : "";
-    const speed = target.estimatedSpeedMetresPerSecond !== null ? ` ${Math.max(0, target.estimatedSpeedMetresPerSecond * 3.6).toFixed(0)}KMH` : "";
-    return `${lock}${plate}${speed}`;
+    return `${lock}${plate} ${relativeMotionLabel(target.relativeMotionEstimate)} RISK ${target.closingRisk.toUpperCase()}`;
   }, []);
 
   const drawTelemetryOverlay = useCallback((ctx: CanvasRenderingContext2D, metrics: HudOverlayMetrics, targets: HudTarget[], width: number, height: number) => {
@@ -92,7 +111,8 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
     const coords = metrics.latitude !== null && metrics.longitude !== null ? `${metrics.latitude.toFixed(5)}, ${metrics.longitude.toFixed(5)}` : "GPS --";
     const weather = metrics.weather ? `${metrics.weather.temperatureCelsius?.toFixed(0) ?? "--"}C ${metrics.weather.summary}` : "WX --";
     const gap = locked?.estimatedCarLengthsAhead !== null && locked?.estimatedCarLengthsAhead !== undefined ? `${locked.estimatedCarLengthsAhead.toFixed(1)} CAR LENGTHS` : "NO TARGET";
-    const lines = [speed, time, coords, weather, gap];
+    const motion = locked ? `${relativeMotionLabel(locked.relativeMotionEstimate)} / RISK ${locked.closingRisk.toUpperCase()}` : "REL MOTION --";
+    const lines = [speed, time, coords, weather, gap, motion];
 
     ctx.save();
     ctx.font = `${Math.max(18, width * 0.018)}px monospace`;
@@ -131,44 +151,6 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
     drawTelemetryOverlay(ctx, getOverlayMetrics(), targets, width, height);
   }, [buildHudLabel, drawTelemetryOverlay, getOverlayMetrics]);
 
-  const estimateTargetMotion = useCallback(
-    (targetId: string, bboxWidthPixels: number, videoWidth: number, label: string): Pick<HudTarget, "estimatedDistanceMetres" | "estimatedCarLengthsAhead" | "estimatedSpeedMetresPerSecond" | "relativeSpeedMetresPerSecond"> => {
-      const assumedWidthMetres = label === "motorcycle" ? 0.85 : label === "bus" || label === "truck" ? 2.45 : 1.85;
-      const assumedLengthMetres = label === "motorcycle" ? 2.2 : label === "bus" || label === "truck" ? 8.5 : 4.5;
-      const horizontalFovDegrees = 60;
-      const focalLengthPixels = videoWidth / (2 * Math.tan((horizontalFovDegrees * Math.PI) / 360));
-      const estimatedDistanceMetres = bboxWidthPixels > 4 ? (assumedWidthMetres * focalLengthPixels) / bboxWidthPixels : null;
-      if (estimatedDistanceMetres === null || !Number.isFinite(estimatedDistanceMetres)) {
-        return {
-          estimatedDistanceMetres: null,
-          estimatedCarLengthsAhead: null,
-          estimatedSpeedMetresPerSecond: null,
-          relativeSpeedMetresPerSecond: null
-        };
-      }
-
-      const now = Date.now();
-      const previous = targetEstimateHistoryRef.current[targetId];
-      const ownSpeed = getOverlayMetrics().ownSpeedMetresPerSecond ?? 0;
-      let relativeSpeedMetresPerSecond: number | null = null;
-      let estimatedSpeedMetresPerSecond: number | null = null;
-      if (previous) {
-        const seconds = Math.max(0.25, (now - previous.timestamp) / 1000);
-        relativeSpeedMetresPerSecond = (estimatedDistanceMetres - previous.distanceMetres) / seconds;
-        estimatedSpeedMetresPerSecond = clamp(ownSpeed + relativeSpeedMetresPerSecond, 0, 80);
-      }
-      targetEstimateHistoryRef.current[targetId] = { distanceMetres: estimatedDistanceMetres, timestamp: now };
-
-      return {
-        estimatedDistanceMetres,
-        estimatedCarLengthsAhead: estimatedDistanceMetres / assumedLengthMetres,
-        estimatedSpeedMetresPerSecond,
-        relativeSpeedMetresPerSecond
-      };
-    },
-    [getOverlayMetrics]
-  );
-
   const recognisePlateText = useCallback(async (video: HTMLVideoElement, target: HudTarget) => {
     if (ocrBusyRef.current) return;
     ocrBusyRef.current = true;
@@ -203,8 +185,8 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
       const result = await recognize(cropCanvas, "eng");
       const plateResult = cleanPlateText(result.data.text, result.data.confidence ?? 0);
       if (plateResult) {
-        plateTextByTargetRef.current[target.id] = plateResult.text;
-        plateConfidenceByTargetRef.current[target.id] = plateResult.confidence;
+        plateTextByTrackRef.current[target.id] = plateResult.text;
+        plateConfidenceByTrackRef.current[target.id] = plateResult.confidence;
         plateMemoryRef.current[plateResult.text] = {
           confidence: plateResult.confidence,
           expiresAt: Date.now() + 5 * 60 * 1000
@@ -234,96 +216,51 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
     if (detectorStatusRef.current === "idle") {
       detectorStatusRef.current = "loading";
       try {
-        await import("@tensorflow/tfjs");
-        const coco = await import("@tensorflow-models/coco-ssd");
-        detectorRef.current = (await coco.load()) as VehicleDetector;
+        detectorRef.current = await YoloVehicleDetector.load();
         detectorStatusRef.current = "ready";
       } catch {
         detectorStatusRef.current = "unsupported";
-        setError("HUD vehicle detection could not load on this device. Video recording can still continue.");
+        setError("HUD vehicle detection could not load. Add a YOLO nano ONNX model at /public/models/yolov8n.onnx, or set NEXT_PUBLIC_YOLO_MODEL_URL.");
         return;
       }
     }
     if (detectorStatusRef.current !== "ready" || !detectorRef.current) return;
 
+    let detectionBusy = false;
     detectionTimerRef.current = window.setInterval(() => {
+      if (detectionBusy) return;
+      detectionBusy = true;
+      const threshold = getHudConfidenceThreshold(hudSensitivityOptionsRef.current);
       detectorRef.current
-        ?.detect(video)
-        .then((predictions) => {
-          const videoWidth = video.videoWidth || 1;
-          const videoHeight = video.videoHeight || 1;
+        ?.detect(video, threshold)
+        .then((detections) => {
+          const timestamp = Date.now();
+          const metrics = getOverlayMetrics();
           prunePlateMemory(plateMemoryRef.current);
-          const vehiclePredictions = predictions.filter((prediction) => ["car", "truck", "bus", "motorcycle"].includes(prediction.class));
-          const confidenceThreshold = getHudConfidenceThreshold(vehiclePredictions.map((prediction) => prediction.score), hudSensitivityOptionsRef.current);
-          const candidates = vehiclePredictions
-            .filter((prediction) => prediction.score >= confidenceThreshold)
-            .map((prediction, index) => {
-              const [x, y, width, height] = prediction.bbox;
-              const centerX = x + width / 2;
-              const left = x / videoWidth;
-              const right = (x + width) / videoWidth;
-              const centerRatio = centerX / videoWidth;
-              const centerOffset = Math.abs(centerX / videoWidth - 0.5);
-              const area = (width * height) / (videoWidth * videoHeight);
-              const inForwardCorridor = centerRatio > 0.24 && centerRatio < 0.76;
-              const veeringIntoMiddle = right > 0.5 && left < 0.84;
-              const concernBoost = inForwardCorridor ? 0.45 : veeringIntoMiddle ? 0.15 : -0.55;
-              const frontScore = prediction.score * 1.8 + area * 3 - centerOffset * 1.9 + concernBoost;
-              const targetId = `candidate-${index}`;
-              const cachedPlate = plateTextByTargetRef.current[targetId] ?? null;
-              const memory = cachedPlate ? plateMemoryRef.current[cachedPlate] : undefined;
-              return {
-                id: targetId,
-                label: prediction.class,
-                confidence: prediction.score,
-                x: x / videoWidth,
-                y: y / videoHeight,
-                width: width / videoWidth,
-                height: height / videoHeight,
-                lockState: "candidate",
-                plateText: cachedPlate,
-                plateConfidence: memory?.confidence ?? plateConfidenceByTargetRef.current[targetId] ?? null,
-                frontScore,
-                ...estimateTargetMotion(targetId, width, videoWidth, prediction.class)
-              } satisfies HudTarget & { frontScore: number };
-            })
-            .filter((candidate) => {
-              const center = candidate.x + candidate.width / 2;
-              const rightEdge = candidate.x + candidate.width;
-              return center > 0.2 && center < 0.8 || (rightEdge > 0.5 && candidate.x < 0.84);
-            })
-            .sort((a, b) => b.frontScore - a.frontScore);
-          const locked = chooseLockedTarget(candidates, lockedTargetRef.current);
-          if (locked) {
-            const lockedPlate = plateTextByTargetRef.current.locked;
-            const lockedPlateConfidence = plateConfidenceByTargetRef.current.locked ?? null;
-            const lockedWithPlate =
-              lockedPlate && (lockedPlateConfidence ?? 0) >= 90
-                ? { ...locked, plateText: lockedPlate, plateConfidence: lockedPlateConfidence }
-                : locked;
-            lockedTargetRef.current = lockedWithPlate;
-            lockedTargetMissesRef.current = 0;
-            if (lockedWithPlate.plateText) {
-              plateTextByTargetRef.current.locked = lockedWithPlate.plateText;
-              if (lockedWithPlate.plateConfidence !== null) plateConfidenceByTargetRef.current.locked = lockedWithPlate.plateConfidence;
-            }
-          } else if (lockedTargetRef.current && lockedTargetMissesRef.current < 4) {
-            lockedTargetMissesRef.current += 1;
-          } else {
-            lockedTargetRef.current = null;
-            lockedTargetMissesRef.current = 0;
+          const updates = updateTracks(tracksRef.current, detections, timestamp, nextTrackIdRef, metrics.ownSpeedMetresPerSecond);
+          const targets = buildHudTargets(updates, lockedTrackIdRef.current, plateTextByTrackRef.current, plateConfidenceByTrackRef.current, plateMemoryRef.current);
+          const lockedTarget = chooseLockedHudTarget(targets, lockedTrackIdRef.current);
+          lockedTrackIdRef.current = lockedTarget?.id ?? null;
+          const visibleTargets = lockedTarget
+            ? [lockedTarget, ...targets.filter((target) => target.id !== lockedTarget.id).slice(0, MAX_HUD_TARGETS - 1)]
+            : targets.slice(0, MAX_HUD_TARGETS);
+          hudTargetsRef.current = visibleTargets;
+          if (visibleTargets.length) {
+            hudFramesRef.current.push({
+              timestamp,
+              targets: visibleTargets,
+              detections: visibleTargets.map((target) => target.evidence)
+            });
           }
-          const vehicles = lockedTargetRef.current
-            ? [lockedTargetRef.current as TrackableHudTarget, ...candidates.filter((candidate) => trackingScore(candidate, lockedTargetRef.current as HudTarget) < 0.34).slice(0, 2)]
-            : candidates.slice(0, 3);
-          hudTargetsRef.current = vehicles.map((target) => stripFrontScore(target));
-          if (hudTargetsRef.current.length) hudFramesRef.current.push({ timestamp: Date.now(), targets: hudTargetsRef.current });
-          setHudTargets(hudTargetsRef.current);
+          setHudTargets(visibleTargets);
         })
-        .catch(() => undefined);
-    }, 650);
+        .catch(() => undefined)
+        .finally(() => {
+          detectionBusy = false;
+        });
+    }, DETECTION_INTERVAL_MS);
     if (plateOcrEnabled) startPlateOcr(video);
-  }, [estimateTargetMotion, startPlateOcr]);
+  }, [getOverlayMetrics, startPlateOcr]);
 
   const startCompositeRecording = useCallback(
     async (mediaStream: MediaStream, plateOcrEnabled: boolean) => {
@@ -368,6 +305,9 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
       await applyCameraLens(mediaStream, options.cameraLens);
       setStream(mediaStream);
       hudFramesRef.current = [];
+      tracksRef.current = [];
+      nextTrackIdRef.current = 1;
+      lockedTrackIdRef.current = null;
       hudSensitivityOptionsRef.current = {
         auto: options.hudSensitivityAuto,
         sensitivity: options.hudSensitivity
@@ -406,11 +346,10 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
     ocrBusyRef.current = false;
     setHudTargets([]);
     hudTargetsRef.current = [];
-    plateTextByTargetRef.current = {};
-    plateConfidenceByTargetRef.current = {};
-    targetEstimateHistoryRef.current = {};
-    lockedTargetRef.current = null;
-    lockedTargetMissesRef.current = 0;
+    tracksRef.current = [];
+    lockedTrackIdRef.current = null;
+    plateTextByTrackRef.current = {};
+    plateConfidenceByTrackRef.current = {};
     const recorder = recorderRef.current;
     const stopped = new Promise<Blob | null>((resolve) => {
       if (!recorder || recorder.state === "inactive") {
@@ -438,62 +377,221 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
   return { stream, hudTargets, hudFramesRef, recordingSupported, error, start, stop };
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
+function updateTracks(tracks: TrackedVehicle[], detections: VehicleDetection[], timestamp: number, nextTrackIdRef: { current: number }, hostSpeedMetresPerSecond: number | null): TrackUpdate[] {
+  const unmatchedTracks = new Set(tracks.map((track) => track.id));
+  const updates: TrackUpdate[] = [];
+
+  detections
+    .slice()
+    .sort((a, b) => b.confidence - a.confidence)
+    .forEach((detection) => {
+      const match = tracks
+        .filter((track) => unmatchedTracks.has(track.id) && track.label === detection.label)
+        .map((track) => ({ track, iou: boxIoU(track, detection) }))
+        .filter((candidate) => candidate.iou >= TRACK_IOU_THRESHOLD)
+        .sort((a, b) => b.iou - a.iou)[0];
+
+      if (match) {
+        const previous = { ...match.track };
+        match.track.previousSeenAt = match.track.lastSeenAt;
+        match.track.x = detection.x;
+        match.track.y = detection.y;
+        match.track.width = detection.width;
+        match.track.height = detection.height;
+        match.track.confidence = detection.confidence;
+        match.track.misses = 0;
+        match.track.ageFrames += 1;
+        match.track.lastSeenAt = timestamp;
+        match.track.lastEvidence = buildEvidence(match.track, detection, previous, match.iou, timestamp, hostSpeedMetresPerSecond);
+        updates.push({ track: match.track, detection, iouWithPrevious: match.iou });
+        unmatchedTracks.delete(match.track.id);
+        return;
+      }
+
+      const track: TrackedVehicle = {
+        id: `veh-${nextTrackIdRef.current}`,
+        label: detection.label,
+        confidence: detection.confidence,
+        x: detection.x,
+        y: detection.y,
+        width: detection.width,
+        height: detection.height,
+        misses: 0,
+        ageFrames: 1,
+        createdAt: timestamp,
+        lastSeenAt: timestamp,
+        previousSeenAt: null,
+        lastEvidence: null
+      };
+      nextTrackIdRef.current += 1;
+      track.lastEvidence = buildEvidence(track, detection, null, null, timestamp, hostSpeedMetresPerSecond);
+      tracks.push(track);
+      updates.push({ track, detection, iouWithPrevious: null });
+    });
+
+  tracks.forEach((track) => {
+    if (unmatchedTracks.has(track.id)) track.misses += 1;
+  });
+  for (let index = tracks.length - 1; index >= 0; index -= 1) {
+    if (tracks[index].misses > MAX_TRACK_MISSES) tracks.splice(index, 1);
+  }
+  return updates;
 }
 
-type TrackableHudTarget = HudTarget & { frontScore: number };
+function buildHudTargets(updates: TrackUpdate[], lockedTrackId: string | null, plates: Record<string, string>, plateConfidences: Record<string, number>, plateMemory: Record<string, PlateMemory>): HudTarget[] {
+  return updates
+    .map(({ track }): HudTarget | null => {
+      const plateText = plates[track.id] ?? null;
+      const memory = plateText ? plateMemory[plateText] : undefined;
+      const evidence = track.lastEvidence;
+      if (!evidence) return null;
+      const target: HudTarget = {
+        id: track.id,
+        label: track.label,
+        confidence: track.confidence,
+        x: track.x,
+        y: track.y,
+        width: track.width,
+        height: track.height,
+        lockState: track.id === lockedTrackId ? "locked" : "candidate",
+        plateText,
+        plateConfidence: memory?.confidence ?? plateConfidences[track.id] ?? null,
+        estimatedDistanceMetres: evidence.estimatedDistanceMetres,
+        estimatedCarLengthsAhead: evidence.estimatedCarLengthsAhead,
+        relativeMotionEstimate: evidence.relativeMotionEstimate,
+        closingRisk: evidence.closingRisk,
+        closingRiskScore: evidence.closingRiskScore,
+        trackAgeFrames: track.ageFrames,
+        lastSeenAt: track.lastSeenAt,
+        evidence
+      };
+      return target;
+    })
+    .filter((target): target is HudTarget => Boolean(target))
+    .filter((target) => inAreaOfConcern(target))
+    .sort((a, b) => frontScore(b) - frontScore(a));
+}
 
-function chooseLockedTarget(candidates: TrackableHudTarget[], previous: HudTarget | null): TrackableHudTarget | null {
-  if (!candidates.length) return null;
-  const matchingPrevious = previous
-    ? candidates
-        .map((candidate) => ({ candidate, score: trackingScore(candidate, previous) }))
-        .filter((match) => match.score > 0.34)
-        .sort((a, b) => b.score - a.score)[0]?.candidate
-    : null;
-  const chosen = matchingPrevious ?? candidates[0];
-  const smoothed = previous && matchingPrevious ? smoothTarget(matchingPrevious, previous) : chosen;
+function chooseLockedHudTarget(targets: HudTarget[], lockedTrackId: string | null): HudTarget | null {
+  const current = lockedTrackId ? targets.find((target) => target.id === lockedTrackId) : null;
+  const chosen = current ?? targets[0] ?? null;
+  if (!chosen) return null;
+  return { ...chosen, lockState: "locked" };
+}
+
+function buildEvidence(track: TrackedVehicle, detection: VehicleDetection, previous: TrackedVehicle | null, iouWithPrevious: number | null, timestamp: number, hostSpeedMetresPerSecond: number | null): VehicleTrackEvidence {
+  const boxAreaRatio = detection.width * detection.height;
+  const previousArea = previous ? previous.width * previous.height : null;
+  const seconds = previous ? Math.max(0.08, (timestamp - previous.lastSeenAt) / 1000) : null;
+  const scaleDeltaPerSecond = previousArea !== null && seconds ? (Math.sqrt(boxAreaRatio) - Math.sqrt(previousArea)) / seconds : null;
+  const centerX = detection.x + detection.width / 2;
+  const centerY = detection.y + detection.height / 2;
+  const previousCenterX = previous ? previous.x + previous.width / 2 : null;
+  const previousCenterY = previous ? previous.y + previous.height / 2 : null;
+  const centerDeltaX = previousCenterX !== null && seconds ? (centerX - previousCenterX) / seconds : null;
+  const centerDeltaY = previousCenterY !== null && seconds ? (centerY - previousCenterY) / seconds : null;
+  const { estimatedDistanceMetres, estimatedCarLengthsAhead } = estimateDistance(track.label, detection.width);
+  const relativeMotionEstimate = classifyRelativeMotion(scaleDeltaPerSecond, centerDeltaX, centerDeltaY);
+  const { closingRisk, closingRiskScore, motionBasis } = classifyClosingRisk(relativeMotionEstimate, scaleDeltaPerSecond, centerX, boxAreaRatio, hostSpeedMetresPerSecond, estimatedCarLengthsAhead);
+
   return {
-    ...smoothed,
-    id: "locked",
-    lockState: "locked",
-    plateText: previous?.plateText && (previous.plateConfidence ?? 0) >= 90 ? previous.plateText : smoothed.plateText,
-    plateConfidence: previous?.plateText && (previous.plateConfidence ?? 0) >= 90 ? previous.plateConfidence : smoothed.plateConfidence,
-    frontScore: chosen.frontScore
+    timestamp,
+    model: YOLO_MODEL_NAME,
+    trackId: track.id,
+    detectionId: detection.id,
+    detectionClass: track.label,
+    confidence: detection.confidence,
+    bbox: {
+      x: detection.x,
+      y: detection.y,
+      width: detection.width,
+      height: detection.height
+    },
+    iouWithPrevious,
+    boxAreaRatio,
+    scaleDeltaPerSecond,
+    centerDeltaPerSecond: {
+      x: centerDeltaX,
+      y: centerDeltaY
+    },
+    hostSpeedMetresPerSecond,
+    estimatedDistanceMetres,
+    estimatedCarLengthsAhead,
+    relativeMotionEstimate,
+    closingRisk,
+    closingRiskScore,
+    motionBasis
   };
 }
 
-function trackingScore(candidate: HudTarget, previous: HudTarget): number {
-  const candidateCenterX = candidate.x + candidate.width / 2;
-  const candidateCenterY = candidate.y + candidate.height / 2;
-  const previousCenterX = previous.x + previous.width / 2;
-  const previousCenterY = previous.y + previous.height / 2;
-  const centerDistance = Math.hypot(candidateCenterX - previousCenterX, candidateCenterY - previousCenterY);
-  return boxIoU(candidate, previous) * 0.75 + Math.max(0, 1 - centerDistance * 3) * 0.25;
-}
-
-function smoothTarget(candidate: TrackableHudTarget, previous: HudTarget): TrackableHudTarget {
-  const alpha = 0.38;
+function estimateDistance(label: TrackedVehicle["label"], boxWidthRatio: number): Pick<VehicleTrackEvidence, "estimatedDistanceMetres" | "estimatedCarLengthsAhead"> {
+  const assumedWidthMetres = label === "motorcycle" ? 0.85 : label === "bus" || label === "truck" ? 2.45 : 1.85;
+  const assumedLengthMetres = label === "motorcycle" ? 2.2 : label === "bus" || label === "truck" ? 8.5 : 4.5;
+  const horizontalFovDegrees = 60;
+  const focalLengthRatio = 1 / (2 * Math.tan((horizontalFovDegrees * Math.PI) / 360));
+  const estimatedDistanceMetres = boxWidthRatio > 0.01 ? (assumedWidthMetres * focalLengthRatio) / boxWidthRatio : null;
   return {
-    ...candidate,
-    x: lerp(previous.x, candidate.x, alpha),
-    y: lerp(previous.y, candidate.y, alpha),
-    width: lerp(previous.width, candidate.width, alpha),
-    height: lerp(previous.height, candidate.height, alpha),
-    estimatedDistanceMetres: smoothNullable(previous.estimatedDistanceMetres, candidate.estimatedDistanceMetres, alpha),
-    estimatedCarLengthsAhead: smoothNullable(previous.estimatedCarLengthsAhead, candidate.estimatedCarLengthsAhead, alpha),
-    estimatedSpeedMetresPerSecond: smoothNullable(previous.estimatedSpeedMetresPerSecond, candidate.estimatedSpeedMetresPerSecond, alpha),
-    relativeSpeedMetresPerSecond: smoothNullable(previous.relativeSpeedMetresPerSecond, candidate.relativeSpeedMetresPerSecond, alpha)
+    estimatedDistanceMetres,
+    estimatedCarLengthsAhead: estimatedDistanceMetres !== null ? estimatedDistanceMetres / assumedLengthMetres : null
   };
 }
 
-function stripFrontScore(target: TrackableHudTarget): HudTarget {
-  const { frontScore: _frontScore, ...hudTarget } = target;
-  return hudTarget;
+function classifyRelativeMotion(scaleDeltaPerSecond: number | null, centerDeltaX: number | null, centerDeltaY: number | null): VehicleRelativeMotion {
+  if (scaleDeltaPerSecond === null || centerDeltaX === null || centerDeltaY === null) return "unknown";
+  const lateralMotion = Math.abs(centerDeltaX);
+  if (lateralMotion > 0.12 && Math.abs(scaleDeltaPerSecond) < 0.05) return "crossing";
+  if (scaleDeltaPerSecond > 0.035) return "approaching";
+  if (scaleDeltaPerSecond < -0.035) return "moving_away";
+  if (Math.abs(centerDeltaY) > 0.12 && scaleDeltaPerSecond > 0.015) return "approaching";
+  return "stable";
 }
 
-function boxIoU(a: HudTarget, b: HudTarget): number {
+function classifyClosingRisk(
+  motion: VehicleRelativeMotion,
+  scaleDeltaPerSecond: number | null,
+  centerX: number,
+  boxAreaRatio: number,
+  hostSpeedMetresPerSecond: number | null,
+  carLengthsAhead: number | null
+): { closingRisk: VehicleClosingRisk; closingRiskScore: number; motionBasis: string[] } {
+  const basis: string[] = [];
+  const centered = 1 - Math.min(1, Math.abs(centerX - 0.5) * 2);
+  const hostSpeedFactor = Math.min(1, (hostSpeedMetresPerSecond ?? 0) / 25);
+  const scaleFactor = Math.max(0, Math.min(1, (scaleDeltaPerSecond ?? 0) / 0.18));
+  const sizeFactor = Math.min(1, boxAreaRatio / 0.18);
+  const distanceFactor = carLengthsAhead !== null ? Math.max(0, Math.min(1, (10 - carLengthsAhead) / 10)) : 0;
+  const motionFactor = motion === "approaching" ? 1 : motion === "crossing" ? 0.55 : motion === "stable" ? 0.2 : 0;
+  const closingRiskScore = clamp(motionFactor * 0.34 + scaleFactor * 0.24 + centered * 0.16 + sizeFactor * 0.12 + hostSpeedFactor * 0.08 + distanceFactor * 0.06, 0, 1);
+
+  if (motion === "approaching") basis.push("bounding box scale is increasing");
+  if (motion === "moving_away") basis.push("bounding box scale is decreasing");
+  if (motion === "crossing") basis.push("centre point is moving laterally");
+  if (centered > 0.65) basis.push("track is near forward corridor");
+  if ((hostSpeedMetresPerSecond ?? 0) > 8) basis.push("host GPS speed is moving");
+  if (carLengthsAhead !== null) basis.push("distance estimate from bounding box scale");
+
+  if (motion === "unknown") return { closingRisk: "unknown", closingRiskScore, motionBasis: basis };
+  if (closingRiskScore >= 0.68) return { closingRisk: "high", closingRiskScore, motionBasis: basis };
+  if (closingRiskScore >= 0.38) return { closingRisk: "medium", closingRiskScore, motionBasis: basis };
+  return { closingRisk: "low", closingRiskScore, motionBasis: basis };
+}
+
+function inAreaOfConcern(target: HudTarget): boolean {
+  const center = target.x + target.width / 2;
+  const rightEdge = target.x + target.width;
+  return (center > 0.2 && center < 0.8) || (rightEdge > 0.5 && target.x < 0.84);
+}
+
+function frontScore(target: HudTarget): number {
+  const center = target.x + target.width / 2;
+  const centerOffset = Math.abs(center - 0.5);
+  const area = target.width * target.height;
+  const lockBoost = target.lockState === "locked" ? 0.4 : 0;
+  const riskBoost = target.closingRisk === "high" ? 0.35 : target.closingRisk === "medium" ? 0.18 : 0;
+  return target.confidence * 1.5 + area * 3 + riskBoost + lockBoost - centerOffset * 1.7;
+}
+
+function boxIoU(a: Pick<TrackedVehicle | VehicleDetection | HudTarget, "x" | "y" | "width" | "height">, b: Pick<TrackedVehicle | VehicleDetection | HudTarget, "x" | "y" | "width" | "height">): number {
   const left = Math.max(a.x, b.x);
   const top = Math.max(a.y, b.y);
   const right = Math.min(a.x + a.width, b.x + b.width);
@@ -503,14 +601,16 @@ function boxIoU(a: HudTarget, b: HudTarget): number {
   return union > 0 ? intersection / union : 0;
 }
 
-function lerp(from: number, to: number, alpha: number): number {
-  return from + (to - from) * alpha;
+function relativeMotionLabel(motion: VehicleRelativeMotion): string {
+  if (motion === "moving_away") return "MOVING AWAY";
+  return motion.toUpperCase();
 }
 
-function smoothNullable(from: number | null, to: number | null, alpha: number): number | null {
-  if (from === null) return to;
-  if (to === null) return from;
-  return lerp(from, to, alpha);
+function getHudConfidenceThreshold(options: { auto: boolean; sensitivity: number }): number {
+  if (!options.auto) {
+    return clamp(0.84 - options.sensitivity * 0.0042, 0.42, 0.84);
+  }
+  return 0.52;
 }
 
 function prunePlateMemory(memory: Record<string, PlateMemory>): void {
@@ -518,19 +618,6 @@ function prunePlateMemory(memory: Record<string, PlateMemory>): void {
   Object.entries(memory).forEach(([plate, entry]) => {
     if (entry.expiresAt < now) delete memory[plate];
   });
-}
-
-function getHudConfidenceThreshold(scores: number[], options: { auto: boolean; sensitivity: number }): number {
-  if (!options.auto) {
-    return clamp(0.84 - options.sensitivity * 0.0042, 0.42, 0.84);
-  }
-  if (!scores.length) return 0.48;
-  const sorted = [...scores].sort((a, b) => b - a);
-  const best = sorted[0];
-  const second = sorted[1] ?? 0;
-  const crowdedPenalty = sorted.length > 4 ? 0.06 : sorted.length > 2 ? 0.03 : 0;
-  const separationBonus = Math.max(0, best - second) * 0.25;
-  return clamp(best * 0.72 + crowdedPenalty - separationBonus, 0.46, 0.78);
 }
 
 function cleanPlateText(rawText: string, confidence: number): { text: string; confidence: number } | null {
@@ -541,4 +628,8 @@ function cleanPlateText(rawText: string, confidence: number): { text: string; co
     .map((part) => part.replace(/[^A-Z0-9]/g, ""))
     .filter((part) => part.length >= 3 && part.length <= 10 && /[A-Z]/.test(part) && /\d/.test(part));
   return candidates[0] ? { text: candidates[0], confidence } : null;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }

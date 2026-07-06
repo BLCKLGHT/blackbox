@@ -109,7 +109,7 @@ export function LiveVideoPreview({
               <span className={`absolute left-0 whitespace-nowrap rounded-sm px-2 py-1 font-black uppercase ${immersiveFullscreen ? "-bottom-8 text-xs" : "-bottom-7 text-[10px]"} ${target.lockState === "locked" ? "bg-signal-green text-cockpit-950" : "bg-signal-amber text-cockpit-950"}`}>
                 {target.lockState === "locked" ? "LOCK" : "VEH"}
                 {target.plateText && (target.plateConfidence ?? 0) >= 90 ? ` ${target.plateText}` : ""}
-                {target.estimatedSpeedMetresPerSecond !== null ? ` ${(target.estimatedSpeedMetresPerSecond * 3.6).toFixed(0)}KMH` : ""}
+                {` ${motionLabel(target.relativeMotionEstimate)} RISK ${(target.closingRisk ?? "unknown").toUpperCase()}`}
               </span>
             </div>
           ))}
@@ -129,7 +129,14 @@ export function LiveVideoPreview({
         <div>{latestGps ? `${latestGps.latitude.toFixed(5)}, ${latestGps.longitude.toFixed(5)}` : "GPS --"}</div>
         <div>{weather ? `${weather.temperatureCelsius?.toFixed(0) ?? "--"}C ${weather.summary}` : "WX --"}</div>
         <div>{locked?.estimatedCarLengthsAhead !== null && locked?.estimatedCarLengthsAhead !== undefined ? `${locked.estimatedCarLengthsAhead.toFixed(1)} CAR LENGTHS` : "NO TARGET"}</div>
+        <div>{locked ? `${motionLabel(locked.relativeMotionEstimate)} / RISK ${(locked.closingRisk ?? "unknown").toUpperCase()}` : "REL MOTION --"}</div>
       </div>
     </div>
   );
+}
+
+function motionLabel(motion: HudTarget["relativeMotionEstimate"] | undefined): string {
+  if (!motion) return "UNKNOWN";
+  if (motion === "moving_away") return "MOVING AWAY";
+  return motion.toUpperCase();
 }

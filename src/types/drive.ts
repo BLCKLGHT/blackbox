@@ -18,6 +18,38 @@ export interface HudOverlayMetrics {
   weather: WeatherInfo | null;
 }
 
+export type VehicleRelativeMotion = "approaching" | "moving_away" | "crossing" | "stable" | "unknown";
+export type VehicleClosingRisk = "low" | "medium" | "high" | "unknown";
+
+export interface VehicleTrackEvidence {
+  timestamp: number;
+  model: string;
+  trackId: string;
+  detectionId: string;
+  detectionClass: "car" | "bus" | "truck" | "motorcycle";
+  confidence: number;
+  bbox: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  iouWithPrevious: number | null;
+  boxAreaRatio: number;
+  scaleDeltaPerSecond: number | null;
+  centerDeltaPerSecond: {
+    x: number | null;
+    y: number | null;
+  };
+  hostSpeedMetresPerSecond: number | null;
+  estimatedDistanceMetres: number | null;
+  estimatedCarLengthsAhead: number | null;
+  relativeMotionEstimate: VehicleRelativeMotion;
+  closingRisk: VehicleClosingRisk;
+  closingRiskScore: number;
+  motionBasis: string[];
+}
+
 export interface HudTarget {
   id: string;
   label: string;
@@ -31,13 +63,18 @@ export interface HudTarget {
   plateConfidence: number | null;
   estimatedDistanceMetres: number | null;
   estimatedCarLengthsAhead: number | null;
-  estimatedSpeedMetresPerSecond: number | null;
-  relativeSpeedMetresPerSecond: number | null;
+  relativeMotionEstimate: VehicleRelativeMotion;
+  closingRisk: VehicleClosingRisk;
+  closingRiskScore: number;
+  trackAgeFrames: number;
+  lastSeenAt: number;
+  evidence: VehicleTrackEvidence;
 }
 
 export interface HudFrame {
   timestamp: number;
   targets: HudTarget[];
+  detections: VehicleTrackEvidence[];
 }
 
 export interface GpsSample {

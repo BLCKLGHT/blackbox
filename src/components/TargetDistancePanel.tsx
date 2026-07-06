@@ -16,10 +16,19 @@ export function TargetDistancePanel({ targets, compact = false }: { targets: Hud
         <div className="text-right text-xs text-slate-500">
           <div>{locked?.lockState === "locked" ? "LOCKED" : locked ? "CANDIDATE" : "NO TARGET"}</div>
           <div className="mt-1 font-bold text-slate-200">{locked?.estimatedDistanceMetres ? `${locked.estimatedDistanceMetres.toFixed(0)}m` : "--"}</div>
-          <div className="font-bold text-slate-200">{locked?.estimatedSpeedMetresPerSecond !== null && locked?.estimatedSpeedMetresPerSecond !== undefined ? `${(locked.estimatedSpeedMetresPerSecond * 3.6).toFixed(0)} km/h` : "--"}</div>
+          <div className="font-bold text-slate-200">{locked ? motionLabel(locked.relativeMotionEstimate) : "--"}</div>
+          <div className={`font-bold ${locked?.closingRisk === "high" ? "text-signal-red" : locked?.closingRisk === "medium" ? "text-signal-amber" : "text-signal-green"}`}>
+            {locked ? `Risk ${locked.closingRisk ?? "unknown"}` : "--"}
+          </div>
         </div>
       </div>
-      <p className="mt-2 text-xs leading-5 text-slate-500">Visual estimate only. Box size, lens, angle, and target type can shift this reading.</p>
+      <p className="mt-2 text-xs leading-5 text-slate-500">Visual estimate only. Relative motion and closing risk use box scale, centre movement, and host GPS speed. They are not measured target speed.</p>
     </section>
   );
+}
+
+function motionLabel(motion: HudTarget["relativeMotionEstimate"] | undefined): string {
+  if (!motion) return "Unknown";
+  if (motion === "moving_away") return "Moving away";
+  return motion.charAt(0).toUpperCase() + motion.slice(1);
 }
