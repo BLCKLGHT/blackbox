@@ -120,6 +120,52 @@ export interface HighImpactEvent {
   notes: string;
 }
 
+export interface IncidentUploadObject {
+  id: string;
+  kind: "video-chunk" | "video-clip" | "sensor-json";
+  objectName: string;
+  contentType: string;
+  timestamp: number;
+  uploadedAt: number;
+  sizeBytes: number | null;
+}
+
+export interface RecordedVideoChunk {
+  id: string;
+  timestamp: number;
+  blob: Blob;
+  contentType: string;
+}
+
+export interface IncidentRecord {
+  id: string;
+  tokenHash: string;
+  sessionId: string;
+  driverName: string;
+  emergencyContactPhone: string;
+  createdAt: number;
+  updatedAt: number;
+  event: HighImpactEvent;
+  protectedWindow: {
+    start: number;
+    end: number;
+  };
+  reviewUrl: string;
+  lastKnownLocation: Pick<GpsSample, "latitude" | "longitude" | "accuracy" | "timestamp"> | null;
+  speedBeforeMetresPerSecond: number | null;
+  speedAfterMetresPerSecond: number | null;
+  confidenceScore: number;
+  lastUploadAt: number | null;
+  uploads: IncidentUploadObject[];
+  sms: {
+    status: "not_configured" | "sent" | "failed";
+    provider: "twilio" | "clicksend" | "none";
+    sentAt: number | null;
+    error: string | null;
+  };
+  warning: string;
+}
+
 export interface ManualMarker {
   id: string;
   timestamp: number;
@@ -156,6 +202,7 @@ export interface DriveSession {
 }
 
 export interface AppSettings {
+  driverName: string;
   impactSensitivity: ImpactSensitivity;
   videoQuality: VideoQuality;
   audioRecording: boolean;

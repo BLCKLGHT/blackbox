@@ -52,6 +52,9 @@ export function SettingsForm() {
           <option value={72}>72 hours</option>
         </select>
       </Field>
+      <Field label="Driver name">
+        <input className="w-full rounded-md border border-cockpit-line bg-cockpit-900 p-3" placeholder="Driver name for incident SMS" value={settings.driverName} onChange={(event) => update({ driverName: event.target.value })} />
+      </Field>
       <section className="rounded-lg border border-cockpit-line bg-cockpit-900 p-4">
         <h2 className="font-black">Emergency Contact</h2>
         <div className="mt-4 grid gap-3">

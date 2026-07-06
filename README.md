@@ -15,7 +15,38 @@ Open `http://localhost:3000`.
 
 ## Deploy to Vercel
 
-Push this repository to GitHub and import it into Vercel. The app uses the Next.js App Router, browser APIs, and IndexedDB only. No server database, auth provider, or environment variables are required for V1.
+Push this repository to GitHub and import it into Vercel. The app uses the Next.js App Router, browser APIs, IndexedDB for local review, and backend API routes for emergency cloud incident sharing.
+
+### Emergency cloud sharing environment
+
+Set these in Vercel to enable incident upload and private review links:
+
+```bash
+GCS_BUCKET_NAME=
+GCP_PROJECT_ID=
+GCP_SERVICE_ACCOUNT_EMAIL=
+GCP_PRIVATE_KEY=
+```
+
+Use one SMS provider:
+
+```bash
+TWILIO_ACCOUNT_SID=
+TWILIO_AUTH_TOKEN=
+TWILIO_FROM_NUMBER=
+```
+
+or:
+
+```bash
+CLICKSEND_USERNAME=
+CLICKSEND_API_KEY=
+CLICKSEND_SOURCE=BlackBox
+```
+
+The browser uploads protected incident video/sensor objects directly to Google Cloud Storage using backend-generated signed URLs. The backend stores incident metadata as JSON in the same GCS bucket and sends SMS alerts.
+
+The GCS bucket must allow browser CORS for signed uploads from the deployed app origin, including `PUT`, `GET`, and `Content-Type`.
 
 ## Browser limitations
 
@@ -25,6 +56,7 @@ Push this repository to GitHub and import it into Vercel. The app uses the Next.
 - V1 records one rear-facing camera stream by default and does not attempt simultaneous front/rear recording.
 - Browser GPS speed can be missing or noisy depending on device, OS, signal, and privacy settings.
 - IndexedDB data is local to the browser profile and can be removed by the OS/browser.
+- Emergency cloud upload requires the configured GCS/SMS environment variables and network connectivity at the time of incident upload.
 
 ## iPhone permission notes
 
@@ -41,8 +73,8 @@ Only the latest drive session is kept locally. Starting a new drive warns that i
 
 - This is not certified crash evidence.
 - Possible High Impact events are heuristic markers, not confirmed crashes.
-- No automatic SMS or email is sent. Prepare SMS and Prepare Email only open the user's messaging client with prefilled text.
-- No cloud sync, account login, encrypted vault, clip trimming, or map replay in V1.
+- Emergency SMS/cloud sharing is best-effort and depends on browser upload, network availability, GCS credentials, and SMS provider credentials.
+- No account login, encrypted vault, clip trimming, or map replay in V1.
 
 ## Future native-app roadmap
 

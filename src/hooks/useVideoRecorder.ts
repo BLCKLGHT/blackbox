@@ -3,7 +3,7 @@
 import { useCallback, useRef, useState } from "react";
 import { getVideoConstraints } from "@/lib/settings";
 import { YoloVehicleDetector, type VehicleDetection } from "@/lib/yolo-vehicle-detector";
-import type { CameraLens, HudFrame, HudOverlayMetrics, HudTarget, VehicleClosingRisk, VehicleRelativeMotion, VehicleTrackEvidence, VideoQuality } from "@/types/drive";
+import type { CameraLens, HudFrame, HudOverlayMetrics, HudTarget, RecordedVideoChunk, VehicleClosingRisk, VehicleRelativeMotion, VehicleTrackEvidence, VideoQuality } from "@/types/drive";
 
 type VideoRecorderStartOptions = {
   cameraLens: CameraLens;
@@ -54,6 +54,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
   const [error, setError] = useState<string | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
+  const recordedChunksRef = useRef<RecordedVideoChunk[]>([]);
   const mimeTypeRef = useRef("video/webm");
   const animationFrameRef = useRef<number | null>(null);
   const detectionTimerRef = useRef<number | null>(null);
@@ -324,8 +325,18 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
       const recorder = mimeType ? new MediaRecorder(recordingStream, { mimeType }) : new MediaRecorder(recordingStream);
       mimeTypeRef.current = recorder.mimeType || mimeType || "video/webm";
       chunksRef.current = [];
+      recordedChunksRef.current = [];
       recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) chunksRef.current.push(event.data);
+        if (event.data.size > 0) {
+          chunksRef.current.push(event.data);
+          recordedChunksRef.current.push({
+            id: `chunk-${Date.now()}-${recordedChunksRef.current.length}`,
+            timestamp: Date.now(),
+            blob: event.data,
+            contentType: event.data.type || mimeTypeRef.current
+          });
+          pruneRecordedChunks(recordedChunksRef.current);
+        }
       };
       recorder.start(1000);
       recorderRef.current = recorder;
@@ -357,7 +368,15 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
         return;
       }
       recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) chunksRef.current.push(event.data);
+        if (event.data.size > 0) {
+          chunksRef.current.push(event.data);
+          recordedChunksRef.current.push({
+            id: `chunk-${Date.now()}-${recordedChunksRef.current.length}`,
+            timestamp: Date.now(),
+            blob: event.data,
+            contentType: event.data.type || mimeTypeRef.current
+          });
+        }
       };
       recorder.onstop = () => {
         window.setTimeout(() => {
@@ -374,7 +393,16 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
     return stopped;
   }, [stream]);
 
-  return { stream, hudTargets, hudFramesRef, recordingSupported, error, start, stop };
+  const getChunksInWindow = useCallback((start: number, end: number) => {
+    return recordedChunksRef.current.filter((chunk) => chunk.timestamp >= start && chunk.timestamp <= end);
+  }, []);
+
+  return { stream, hudTargets, hudFramesRef, recordingSupported, error, start, stop, getChunksInWindow, mimeTypeRef };
+}
+
+function pruneRecordedChunks(chunks: RecordedVideoChunk[]): void {
+  const oldestProtectedTime = Date.now() - 6 * 60 * 1000;
+  while (chunks.length && chunks[0].timestamp < oldestProtectedTime) chunks.shift();
 }
 
 function updateTracks(tracks: TrackedVehicle[], detections: VehicleDetection[], timestamp: number, nextTrackIdRef: { current: number }, hostSpeedMetresPerSecond: number | null): TrackUpdate[] {

@@ -1,6 +1,7 @@
 import type { AppSettings, ImpactSensitivity, RetentionHours, VideoQuality } from "@/types/drive";
 
 export const DEFAULT_SETTINGS: AppSettings = {
+  driverName: "",
   impactSensitivity: "medium",
   videoQuality: "medium",
   audioRecording: false,
