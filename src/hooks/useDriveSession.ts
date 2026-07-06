@@ -46,6 +46,8 @@ export function useDriveSession() {
   const [manualMarkers, setManualMarkers] = useState<ManualMarker[]>([]);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [gpsTrail, setGpsTrail] = useState(session.gpsSamples);
+  const activeStartedAtRef = useRef(session.startedAt);
+  const lastSessionSnapshotAtRef = useRef(0);
   const activeIncidentRef = useRef<{
     incident: CloudIncidentHandle;
     event: HighImpactEvent;
@@ -124,10 +126,15 @@ export function useDriveSession() {
   const start = useCallback(async (options: StartDriveOptions) => {
     const started = createSession(settings.retentionHours);
     activeIncidentRef.current = null;
+    activeStartedAtRef.current = started.startedAt;
+    lastSessionSnapshotAtRef.current = 0;
     setSession(started);
     setWarnings([]);
     setElapsed(0);
     setGpsTrail([]);
+    setEvents([]);
+    setManualMarkers([]);
+    setIsRecording(true);
     const videoPromise = video.start(options);
     const geoStarted = geo.start();
     const motionPromise = motion.start();
@@ -186,9 +193,12 @@ export function useDriveSession() {
 
   useEffect(() => {
     if (!isRecording) return;
-    const timer = window.setInterval(() => {
-      const duration = Math.round((Date.now() - session.startedAt) / 1000);
+    const updateRecordingState = () => {
+      const now = Date.now();
+      const duration = Math.max(0, Math.floor((now - activeStartedAtRef.current) / 1000));
       setElapsed(duration);
+      if (now - lastSessionSnapshotAtRef.current < 1000) return;
+      lastSessionSnapshotAtRef.current = now;
       setGpsTrail(geo.samplesRef.current.slice(-80));
       detectImpact(motion.motionSamplesRef.current, geo.samplesRef.current);
       const partial: DriveSession = {
@@ -216,7 +226,9 @@ export function useDriveSession() {
             setWarnings((current) => (current.includes(message) ? current : [...current, message]));
           });
       }
-    }, 1000);
+    };
+    updateRecordingState();
+    const timer = window.setInterval(updateRecordingState, 250);
     return () => window.clearInterval(timer);
   }, [detectImpact, events, geo.samplesRef, isRecording, manualMarkers, motion.motionSamplesRef, motion.orientationSamplesRef, session, uploadActiveIncident]);
 
