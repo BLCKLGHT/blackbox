@@ -98,7 +98,7 @@ export function LiveVideoPreview({
           {hudTargets.map((target) => (
             <div
               key={target.id}
-              className={`absolute border-2 ${target.lockState === "locked" ? "border-signal-green text-signal-green" : "border-signal-amber text-signal-amber"}`}
+              className={`absolute border-2 ${target.displayState === "strong_lock" ? "border-signal-green text-signal-green" : target.displayState === "weak_lock" ? "border-signal-amber text-signal-amber" : "border-signal-amber/70 text-signal-amber"}`}
               style={{
                 left: `${target.x * 100}%`,
                 top: `${target.y * 100}%`,
@@ -106,10 +106,10 @@ export function LiveVideoPreview({
                 height: `${target.height * 100}%`
               }}
             >
-              <span className={`absolute left-0 whitespace-nowrap rounded-sm px-2 py-1 font-black uppercase ${immersiveFullscreen ? "-bottom-8 text-xs" : "-bottom-7 text-[10px]"} ${target.lockState === "locked" ? "bg-signal-green text-cockpit-950" : "bg-signal-amber text-cockpit-950"}`}>
-                {target.lockState === "locked" ? "LOCK" : "VEH"}
+              <span className={`absolute left-0 whitespace-nowrap rounded-sm px-2 py-1 font-black uppercase ${immersiveFullscreen ? "-bottom-8 text-xs" : "-bottom-7 text-[10px]"} ${target.displayState === "strong_lock" ? "bg-signal-green text-cockpit-950" : "bg-signal-amber text-cockpit-950"}`}>
+                {lockLabel(target.displayState)}
                 {target.plateText && (target.plateConfidence ?? 0) >= 90 ? ` ${target.plateText}` : ""}
-                {` ${motionLabel(target.relativeMotionEstimate)} RISK ${(target.closingRisk ?? "unknown").toUpperCase()}`}
+                {` ${motionLabel(target.relativeMotionEstimate)} RISK ${(target.closingRisk ?? "unknown").toUpperCase()} TC${Math.round((target.trackConfidence ?? 0) * 100)}`}
               </span>
             </div>
           ))}
@@ -130,6 +130,7 @@ export function LiveVideoPreview({
         <div>{weather ? `${weather.temperatureCelsius?.toFixed(0) ?? "--"}C ${weather.summary}` : "WX --"}</div>
         <div>{locked?.estimatedCarLengthsAhead !== null && locked?.estimatedCarLengthsAhead !== undefined ? `${locked.estimatedCarLengthsAhead.toFixed(1)} CAR LENGTHS` : "NO TARGET"}</div>
         <div>{locked ? `${motionLabel(locked.relativeMotionEstimate)} / RISK ${(locked.closingRisk ?? "unknown").toUpperCase()}` : "REL MOTION --"}</div>
+        <div>{locked ? `${lockLabel(locked.displayState)} / TC ${Math.round((locked.trackConfidence ?? 0) * 100)} / ${(locked.lockDurationMs / 1000).toFixed(1)}S` : "SEARCHING"}</div>
       </div>
     </div>
   );
@@ -139,4 +140,12 @@ function motionLabel(motion: HudTarget["relativeMotionEstimate"] | undefined): s
   if (!motion) return "UNKNOWN";
   if (motion === "moving_away") return "MOVING AWAY";
   return motion.toUpperCase();
+}
+
+function lockLabel(state: HudTarget["displayState"] | undefined): string {
+  if (state === "strong_lock") return "STRONG LOCK";
+  if (state === "weak_lock") return "WEAK LOCK";
+  if (state === "lost_target") return "LOST";
+  if (state === "no_vehicle") return "NO VEHICLE";
+  return "SEARCHING";
 }

@@ -20,6 +20,7 @@ export interface HudOverlayMetrics {
 
 export type VehicleRelativeMotion = "approaching" | "moving_away" | "crossing" | "stable" | "unknown";
 export type VehicleClosingRisk = "low" | "medium" | "high" | "unknown";
+export type VehicleLockDisplayState = "no_vehicle" | "searching" | "strong_lock" | "weak_lock" | "lost_target";
 
 export interface VehicleTrackEvidence {
   timestamp: number;
@@ -48,6 +49,17 @@ export interface VehicleTrackEvidence {
   closingRisk: VehicleClosingRisk;
   closingRiskScore: number;
   motionBasis: string[];
+  tracking: {
+    displayState: VehicleLockDisplayState;
+    trackConfidence: number;
+    lockDurationMs: number;
+    trackAgeFrames: number;
+    trackStability: number;
+    leadScore: number;
+    predicted: boolean;
+    lostForMs: number;
+    association: "high_confidence" | "low_confidence" | "prediction";
+  };
 }
 
 export interface HudTarget {
@@ -66,6 +78,11 @@ export interface HudTarget {
   relativeMotionEstimate: VehicleRelativeMotion;
   closingRisk: VehicleClosingRisk;
   closingRiskScore: number;
+  displayState: VehicleLockDisplayState;
+  trackConfidence: number;
+  lockDurationMs: number;
+  trackStability: number;
+  predicted: boolean;
   trackAgeFrames: number;
   lastSeenAt: number;
   evidence: VehicleTrackEvidence;
@@ -75,6 +92,7 @@ export interface HudFrame {
   timestamp: number;
   targets: HudTarget[];
   detections: VehicleTrackEvidence[];
+  trackingState: VehicleLockDisplayState;
 }
 
 export interface GpsSample {

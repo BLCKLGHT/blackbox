@@ -3,7 +3,7 @@
 import { useCallback, useRef, useState } from "react";
 import { getVideoConstraints } from "@/lib/settings";
 import { YoloVehicleDetector, type VehicleDetection } from "@/lib/yolo-vehicle-detector";
-import type { CameraLens, HudFrame, HudOverlayMetrics, HudTarget, RecordedVideoChunk, VehicleClosingRisk, VehicleRelativeMotion, VehicleTrackEvidence, VideoQuality } from "@/types/drive";
+import type { CameraLens, HudFrame, HudOverlayMetrics, HudTarget, RecordedVideoChunk, VehicleClosingRisk, VehicleLockDisplayState, VehicleRelativeMotion, VehicleTrackEvidence, VideoQuality } from "@/types/drive";
 
 type VideoRecorderStartOptions = {
   cameraLens: CameraLens;
@@ -22,29 +22,53 @@ type TrackedVehicle = {
   id: string;
   label: HudTarget["evidence"]["detectionClass"];
   confidence: number;
+  detectionConfidence: number;
+  trackConfidence: number;
+  stability: number;
+  leadScore: number;
   x: number;
   y: number;
   width: number;
   height: number;
+  vx: number;
+  vy: number;
+  vw: number;
+  vh: number;
   misses: number;
   ageFrames: number;
+  hits: number;
   createdAt: number;
   lastSeenAt: number;
+  lastDetectedAt: number;
   previousSeenAt: number | null;
   lastEvidence: VehicleTrackEvidence | null;
+  predicted: boolean;
+  association: VehicleTrackEvidence["tracking"]["association"];
 };
 
 type TrackUpdate = {
   track: TrackedVehicle;
-  detection: VehicleDetection;
+  detection: VehicleDetection | null;
   iouWithPrevious: number | null;
+};
+
+type LeadLockState = {
+  trackId: string | null;
+  lockedAt: number | null;
+  pendingTrackId: string | null;
+  pendingSince: number | null;
+  lostSince: number | null;
+  displayState: VehicleLockDisplayState;
 };
 
 const YOLO_MODEL_NAME = "yolov8n-onnx";
 const DETECTION_INTERVAL_MS = 180;
-const TRACK_IOU_THRESHOLD = 0.24;
-const MAX_TRACK_MISSES = 8;
+const TRACK_IOU_THRESHOLD = 0.18;
+const MAX_TRACK_MISSES = 12;
 const MAX_HUD_TARGETS = 4;
+const LEAD_SWITCH_MARGIN = 0.34;
+const LEAD_SWITCH_HOLD_MS = 1500;
+const WEAK_LOCK_MS = 750;
 
 export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverlayMetrics: () => HudOverlayMetrics) {
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -64,7 +88,14 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
   const hudTargetsRef = useRef<HudTarget[]>([]);
   const tracksRef = useRef<TrackedVehicle[]>([]);
   const nextTrackIdRef = useRef(1);
-  const lockedTrackIdRef = useRef<string | null>(null);
+  const leadLockRef = useRef<LeadLockState>({
+    trackId: null,
+    lockedAt: null,
+    pendingTrackId: null,
+    pendingSince: null,
+    lostSince: null,
+    displayState: "no_vehicle"
+  });
   const plateTextByTrackRef = useRef<Record<string, string>>({});
   const plateConfidenceByTrackRef = useRef<Record<string, number>>({});
   const plateMemoryRef = useRef<Record<string, PlateMemory>>({});
@@ -100,9 +131,9 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
   }, []);
 
   const buildHudLabel = useCallback((target: HudTarget) => {
-    const lock = target.lockState === "locked" ? "LOCK" : "VEH";
+    const lock = target.displayState === "weak_lock" ? "WEAK LOCK" : target.lockState === "locked" ? "LOCK" : "VEH";
     const plate = target.plateText && (target.plateConfidence ?? 0) >= 90 ? ` ${target.plateText}` : "";
-    return `${lock}${plate} ${relativeMotionLabel(target.relativeMotionEstimate)} RISK ${target.closingRisk.toUpperCase()}`;
+    return `${lock}${plate} ${relativeMotionLabel(target.relativeMotionEstimate)} RISK ${target.closingRisk.toUpperCase()} TC${Math.round(target.trackConfidence * 100)}`;
   }, []);
 
   const drawTelemetryOverlay = useCallback((ctx: CanvasRenderingContext2D, metrics: HudOverlayMetrics, targets: HudTarget[], width: number, height: number) => {
@@ -112,8 +143,9 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
     const coords = metrics.latitude !== null && metrics.longitude !== null ? `${metrics.latitude.toFixed(5)}, ${metrics.longitude.toFixed(5)}` : "GPS --";
     const weather = metrics.weather ? `${metrics.weather.temperatureCelsius?.toFixed(0) ?? "--"}C ${metrics.weather.summary}` : "WX --";
     const gap = locked?.estimatedCarLengthsAhead !== null && locked?.estimatedCarLengthsAhead !== undefined ? `${locked.estimatedCarLengthsAhead.toFixed(1)} CAR LENGTHS` : "NO TARGET";
-    const motion = locked ? `${relativeMotionLabel(locked.relativeMotionEstimate)} / RISK ${locked.closingRisk.toUpperCase()}` : "REL MOTION --";
-    const lines = [speed, time, coords, weather, gap, motion];
+    const motion = locked ? `${lockStateLabel(locked.displayState)} / ${relativeMotionLabel(locked.relativeMotionEstimate)} / RISK ${locked.closingRisk.toUpperCase()}` : "NO VEHICLE";
+    const confidence = locked ? `TRACK ${Math.round(locked.trackConfidence * 100)}% / LOCK ${(locked.lockDurationMs / 1000).toFixed(1)}S` : "TRACK --";
+    const lines = [speed, time, coords, weather, gap, motion, confidence];
 
     ctx.save();
     ctx.font = `${Math.max(18, width * 0.018)}px monospace`;
@@ -239,20 +271,19 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
           const metrics = getOverlayMetrics();
           prunePlateMemory(plateMemoryRef.current);
           const updates = updateTracks(tracksRef.current, detections, timestamp, nextTrackIdRef, metrics.ownSpeedMetresPerSecond);
-          const targets = buildHudTargets(updates, lockedTrackIdRef.current, plateTextByTrackRef.current, plateConfidenceByTrackRef.current, plateMemoryRef.current);
-          const lockedTarget = chooseLockedHudTarget(targets, lockedTrackIdRef.current);
-          lockedTrackIdRef.current = lockedTarget?.id ?? null;
-          const visibleTargets = lockedTarget
-            ? [lockedTarget, ...targets.filter((target) => target.id !== lockedTarget.id).slice(0, MAX_HUD_TARGETS - 1)]
+          const lead = updateLeadLock(tracksRef.current, leadLockRef.current, timestamp);
+          const targets = buildHudTargets(updates, lead, leadLockRef.current, plateTextByTrackRef.current, plateConfidenceByTrackRef.current, plateMemoryRef.current);
+          const leadTarget = lead ? targets.find((target) => target.id === lead.id) ?? null : null;
+          const visibleTargets = leadTarget
+            ? [leadTarget, ...targets.filter((target) => target.id !== leadTarget.id).slice(0, MAX_HUD_TARGETS - 1)]
             : targets.slice(0, MAX_HUD_TARGETS);
           hudTargetsRef.current = visibleTargets;
-          if (visibleTargets.length) {
-            hudFramesRef.current.push({
-              timestamp,
-              targets: visibleTargets,
-              detections: visibleTargets.map((target) => target.evidence)
-            });
-          }
+          hudFramesRef.current.push({
+            timestamp,
+            targets: visibleTargets,
+            detections: tracksRef.current.map((track) => track.lastEvidence).filter((evidence): evidence is VehicleTrackEvidence => Boolean(evidence)),
+            trackingState: leadLockRef.current.displayState
+          });
           setHudTargets(visibleTargets);
         })
         .catch(() => undefined)
@@ -308,7 +339,14 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
       hudFramesRef.current = [];
       tracksRef.current = [];
       nextTrackIdRef.current = 1;
-      lockedTrackIdRef.current = null;
+      leadLockRef.current = {
+        trackId: null,
+        lockedAt: null,
+        pendingTrackId: null,
+        pendingSince: null,
+        lostSince: null,
+        displayState: "no_vehicle"
+      };
       hudSensitivityOptionsRef.current = {
         auto: options.hudSensitivityAuto,
         sensitivity: options.hudSensitivity
@@ -358,7 +396,14 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
     setHudTargets([]);
     hudTargetsRef.current = [];
     tracksRef.current = [];
-    lockedTrackIdRef.current = null;
+    leadLockRef.current = {
+      trackId: null,
+      lockedAt: null,
+      pendingTrackId: null,
+      pendingSince: null,
+      lostSince: null,
+      displayState: "no_vehicle"
+    };
     plateTextByTrackRef.current = {};
     plateConfidenceByTrackRef.current = {};
     const recorder = recorderRef.current;
@@ -406,73 +451,76 @@ function pruneRecordedChunks(chunks: RecordedVideoChunk[]): void {
 }
 
 function updateTracks(tracks: TrackedVehicle[], detections: VehicleDetection[], timestamp: number, nextTrackIdRef: { current: number }, hostSpeedMetresPerSecond: number | null): TrackUpdate[] {
-  const unmatchedTracks = new Set(tracks.map((track) => track.id));
+  tracks.forEach((track) => predictTrack(track, timestamp));
+
   const updates: TrackUpdate[] = [];
+  const unmatchedTracks = new Set(tracks.map((track) => track.id));
+  const unmatchedDetections = new Set(detections.map((_, index) => index));
 
-  detections
-    .slice()
-    .sort((a, b) => b.confidence - a.confidence)
-    .forEach((detection) => {
-      const match = tracks
-        .filter((track) => unmatchedTracks.has(track.id) && track.label === detection.label)
-        .map((track) => ({ track, iou: boxIoU(track, detection) }))
-        .filter((candidate) => candidate.iou >= TRACK_IOU_THRESHOLD)
-        .sort((a, b) => b.iou - a.iou)[0];
+  associateDetections("high_confidence", 0.5);
+  associateDetections("low_confidence", 0.22);
 
-      if (match) {
-        const previous = { ...match.track };
-        match.track.previousSeenAt = match.track.lastSeenAt;
-        match.track.x = detection.x;
-        match.track.y = detection.y;
-        match.track.width = detection.width;
-        match.track.height = detection.height;
-        match.track.confidence = detection.confidence;
-        match.track.misses = 0;
-        match.track.ageFrames += 1;
-        match.track.lastSeenAt = timestamp;
-        match.track.lastEvidence = buildEvidence(match.track, detection, previous, match.iou, timestamp, hostSpeedMetresPerSecond);
-        updates.push({ track: match.track, detection, iouWithPrevious: match.iou });
-        unmatchedTracks.delete(match.track.id);
-        return;
-      }
-
-      const track: TrackedVehicle = {
-        id: `veh-${nextTrackIdRef.current}`,
-        label: detection.label,
-        confidence: detection.confidence,
-        x: detection.x,
-        y: detection.y,
-        width: detection.width,
-        height: detection.height,
-        misses: 0,
-        ageFrames: 1,
-        createdAt: timestamp,
-        lastSeenAt: timestamp,
-        previousSeenAt: null,
-        lastEvidence: null
-      };
-      nextTrackIdRef.current += 1;
-      track.lastEvidence = buildEvidence(track, detection, null, null, timestamp, hostSpeedMetresPerSecond);
-      tracks.push(track);
-      updates.push({ track, detection, iouWithPrevious: null });
-    });
+  detections.forEach((detection, index) => {
+    if (!unmatchedDetections.has(index) || detection.confidence < 0.42 || !inDetectionConcernArea(detection)) return;
+    const track = createTrack(detection, timestamp, nextTrackIdRef);
+    track.lastEvidence = buildEvidence(track, detection, null, null, timestamp, hostSpeedMetresPerSecond, "high_confidence", "searching");
+    tracks.push(track);
+    updates.push({ track, detection, iouWithPrevious: null });
+  });
 
   tracks.forEach((track) => {
-    if (unmatchedTracks.has(track.id)) track.misses += 1;
+    if (unmatchedTracks.has(track.id)) {
+      track.misses += 1;
+      track.ageFrames += 1;
+      track.predicted = true;
+      track.association = "prediction";
+      track.confidence = Math.max(0, track.confidence * 0.72);
+      track.trackConfidence = Math.max(0, track.trackConfidence * 0.84);
+      track.stability = Math.max(0, track.stability * 0.9);
+      track.lastEvidence = buildEvidence(track, null, null, null, timestamp, hostSpeedMetresPerSecond, "prediction", "searching");
+      updates.push({ track, detection: null, iouWithPrevious: null });
+    }
   });
+
   for (let index = tracks.length - 1; index >= 0; index -= 1) {
-    if (tracks[index].misses > MAX_TRACK_MISSES) tracks.splice(index, 1);
+    if (tracks[index].misses > MAX_TRACK_MISSES || tracks[index].trackConfidence < 0.06) tracks.splice(index, 1);
   }
   return updates;
+
+  function associateDetections(association: VehicleTrackEvidence["tracking"]["association"], minimumConfidence: number) {
+    const candidates = detections
+      .map((detection, index) => ({ detection, index }))
+      .filter(({ detection, index }) => unmatchedDetections.has(index) && detection.confidence >= minimumConfidence)
+      .sort((a, b) => b.detection.confidence - a.detection.confidence);
+
+    candidates.forEach(({ detection, index }) => {
+      const match = tracks
+        .filter((track) => unmatchedTracks.has(track.id) && track.label === detection.label)
+        .map((track) => {
+          const iou = boxIoU(track, detection);
+          const centerDistance = centerDistanceBetween(track, detection);
+          const associationScore = iou * 0.72 + Math.max(0, 1 - centerDistance * 3.2) * 0.28 + track.trackConfidence * 0.12;
+          return { track, iou, associationScore };
+        })
+        .filter((candidate) => candidate.iou >= TRACK_IOU_THRESHOLD || candidate.associationScore >= 0.42)
+        .sort((a, b) => b.associationScore - a.associationScore)[0];
+      if (!match) return;
+      updateMatchedTrack(match.track, detection, match.iou, timestamp, hostSpeedMetresPerSecond, association);
+      updates.push({ track: match.track, detection, iouWithPrevious: match.iou });
+      unmatchedTracks.delete(match.track.id);
+      unmatchedDetections.delete(index);
+    });
+  }
 }
 
-function buildHudTargets(updates: TrackUpdate[], lockedTrackId: string | null, plates: Record<string, string>, plateConfidences: Record<string, number>, plateMemory: Record<string, PlateMemory>): HudTarget[] {
-  return updates
+function buildHudTargets(updates: TrackUpdate[], lead: TrackedVehicle | null, lock: LeadLockState, plates: Record<string, string>, plateConfidences: Record<string, number>, plateMemory: Record<string, PlateMemory>): HudTarget[] {
+  const displayable = updates
     .map(({ track }): HudTarget | null => {
       const plateText = plates[track.id] ?? null;
       const memory = plateText ? plateMemory[plateText] : undefined;
       const evidence = track.lastEvidence;
       if (!evidence) return null;
+      const displayState = track.id === lead?.id ? lock.displayState : "searching";
       const target: HudTarget = {
         id: track.id,
         label: track.label,
@@ -481,7 +529,7 @@ function buildHudTargets(updates: TrackUpdate[], lockedTrackId: string | null, p
         y: track.y,
         width: track.width,
         height: track.height,
-        lockState: track.id === lockedTrackId ? "locked" : "candidate",
+        lockState: track.id === lead?.id && (lock.displayState === "strong_lock" || lock.displayState === "weak_lock") ? "locked" : "candidate",
         plateText,
         plateConfidence: memory?.confidence ?? plateConfidences[track.id] ?? null,
         estimatedDistanceMetres: evidence.estimatedDistanceMetres,
@@ -489,36 +537,114 @@ function buildHudTargets(updates: TrackUpdate[], lockedTrackId: string | null, p
         relativeMotionEstimate: evidence.relativeMotionEstimate,
         closingRisk: evidence.closingRisk,
         closingRiskScore: evidence.closingRiskScore,
+        displayState,
+        trackConfidence: track.trackConfidence,
+        lockDurationMs: track.id === lead?.id && lock.lockedAt ? Math.max(0, evidence.timestamp - lock.lockedAt) : 0,
+        trackStability: track.stability,
+        predicted: track.predicted,
         trackAgeFrames: track.ageFrames,
         lastSeenAt: track.lastSeenAt,
-        evidence
+        evidence: {
+          ...evidence,
+          tracking: {
+            ...evidence.tracking,
+            displayState,
+            lockDurationMs: track.id === lead?.id && lock.lockedAt ? Math.max(0, evidence.timestamp - lock.lockedAt) : 0,
+            leadScore: track.leadScore
+          }
+        }
       };
+      track.lastEvidence = target.evidence;
       return target;
     })
     .filter((target): target is HudTarget => Boolean(target))
     .filter((target) => inAreaOfConcern(target))
     .sort((a, b) => frontScore(b) - frontScore(a));
+  return displayable;
 }
 
-function chooseLockedHudTarget(targets: HudTarget[], lockedTrackId: string | null): HudTarget | null {
-  const current = lockedTrackId ? targets.find((target) => target.id === lockedTrackId) : null;
-  const chosen = current ?? targets[0] ?? null;
-  if (!chosen) return null;
-  return { ...chosen, lockState: "locked" };
+function updateLeadLock(tracks: TrackedVehicle[], lock: LeadLockState, timestamp: number): TrackedVehicle | null {
+  const leadable = tracks.filter((track) => inTrackConcernArea(track) && track.trackConfidence > 0.12);
+  leadable.forEach((track) => {
+    track.leadScore = calculateLeadScore(track, track.id === lock.trackId);
+  });
+  const best = leadable.slice().sort((a, b) => b.leadScore - a.leadScore)[0] ?? null;
+  const current = lock.trackId ? tracks.find((track) => track.id === lock.trackId) ?? null : null;
+
+  if (!best) {
+    if (current && timestamp - current.lastDetectedAt <= WEAK_LOCK_MS) {
+      lock.displayState = "weak_lock";
+      return current;
+    }
+    lock.trackId = null;
+    lock.lockedAt = null;
+    lock.pendingTrackId = null;
+    lock.pendingSince = null;
+    lock.displayState = tracks.length ? "lost_target" : "no_vehicle";
+    return null;
+  }
+
+  if (!current || !lock.trackId) {
+    lock.trackId = best.id;
+    lock.lockedAt = timestamp;
+    lock.pendingTrackId = null;
+    lock.pendingSince = null;
+    lock.displayState = best.predicted ? "weak_lock" : "strong_lock";
+    return best;
+  }
+
+  const currentMissingMs = timestamp - current.lastDetectedAt;
+  if (currentMissingMs > WEAK_LOCK_MS) {
+    lock.trackId = null;
+    lock.lockedAt = null;
+    lock.pendingTrackId = null;
+    lock.pendingSince = null;
+    lock.displayState = "lost_target";
+    return null;
+  }
+
+  if (best.id !== current.id && best.leadScore > current.leadScore + LEAD_SWITCH_MARGIN) {
+    if (lock.pendingTrackId !== best.id) {
+      lock.pendingTrackId = best.id;
+      lock.pendingSince = timestamp;
+    } else if (lock.pendingSince && timestamp - lock.pendingSince >= LEAD_SWITCH_HOLD_MS) {
+      lock.trackId = best.id;
+      lock.lockedAt = timestamp;
+      lock.pendingTrackId = null;
+      lock.pendingSince = null;
+      lock.displayState = best.predicted ? "weak_lock" : "strong_lock";
+      return best;
+    }
+  } else {
+    lock.pendingTrackId = null;
+    lock.pendingSince = null;
+  }
+
+  lock.displayState = current.predicted ? "weak_lock" : "strong_lock";
+  return current;
 }
 
-function buildEvidence(track: TrackedVehicle, detection: VehicleDetection, previous: TrackedVehicle | null, iouWithPrevious: number | null, timestamp: number, hostSpeedMetresPerSecond: number | null): VehicleTrackEvidence {
-  const boxAreaRatio = detection.width * detection.height;
+function buildEvidence(
+  track: TrackedVehicle,
+  detection: VehicleDetection | null,
+  previous: TrackedVehicle | null,
+  iouWithPrevious: number | null,
+  timestamp: number,
+  hostSpeedMetresPerSecond: number | null,
+  association: VehicleTrackEvidence["tracking"]["association"],
+  displayState: VehicleLockDisplayState
+): VehicleTrackEvidence {
+  const boxAreaRatio = track.width * track.height;
   const previousArea = previous ? previous.width * previous.height : null;
   const seconds = previous ? Math.max(0.08, (timestamp - previous.lastSeenAt) / 1000) : null;
   const scaleDeltaPerSecond = previousArea !== null && seconds ? (Math.sqrt(boxAreaRatio) - Math.sqrt(previousArea)) / seconds : null;
-  const centerX = detection.x + detection.width / 2;
-  const centerY = detection.y + detection.height / 2;
+  const centerX = track.x + track.width / 2;
+  const centerY = track.y + track.height / 2;
   const previousCenterX = previous ? previous.x + previous.width / 2 : null;
   const previousCenterY = previous ? previous.y + previous.height / 2 : null;
   const centerDeltaX = previousCenterX !== null && seconds ? (centerX - previousCenterX) / seconds : null;
   const centerDeltaY = previousCenterY !== null && seconds ? (centerY - previousCenterY) / seconds : null;
-  const { estimatedDistanceMetres, estimatedCarLengthsAhead } = estimateDistance(track.label, detection.width);
+  const { estimatedDistanceMetres, estimatedCarLengthsAhead } = estimateDistance(track.label, track.width);
   const relativeMotionEstimate = classifyRelativeMotion(scaleDeltaPerSecond, centerDeltaX, centerDeltaY);
   const { closingRisk, closingRiskScore, motionBasis } = classifyClosingRisk(relativeMotionEstimate, scaleDeltaPerSecond, centerX, boxAreaRatio, hostSpeedMetresPerSecond, estimatedCarLengthsAhead);
 
@@ -526,14 +652,14 @@ function buildEvidence(track: TrackedVehicle, detection: VehicleDetection, previ
     timestamp,
     model: YOLO_MODEL_NAME,
     trackId: track.id,
-    detectionId: detection.id,
+    detectionId: detection?.id ?? `${track.id}-predicted-${timestamp}`,
     detectionClass: track.label,
-    confidence: detection.confidence,
+    confidence: track.confidence,
     bbox: {
-      x: detection.x,
-      y: detection.y,
-      width: detection.width,
-      height: detection.height
+      x: track.x,
+      y: track.y,
+      width: track.width,
+      height: track.height
     },
     iouWithPrevious,
     boxAreaRatio,
@@ -548,8 +674,147 @@ function buildEvidence(track: TrackedVehicle, detection: VehicleDetection, previ
     relativeMotionEstimate,
     closingRisk,
     closingRiskScore,
-    motionBasis
+    motionBasis,
+    tracking: {
+      displayState,
+      trackConfidence: track.trackConfidence,
+      lockDurationMs: 0,
+      trackAgeFrames: track.ageFrames,
+      trackStability: track.stability,
+      leadScore: track.leadScore,
+      predicted: track.predicted,
+      lostForMs: Math.max(0, timestamp - track.lastDetectedAt),
+      association
+    }
   };
+}
+
+function createTrack(detection: VehicleDetection, timestamp: number, nextTrackIdRef: { current: number }): TrackedVehicle {
+  const track: TrackedVehicle = {
+    id: `veh-${nextTrackIdRef.current}`,
+    label: detection.label,
+    confidence: detection.confidence,
+    detectionConfidence: detection.confidence,
+    trackConfidence: clamp(detection.confidence * 0.72, 0, 1),
+    stability: 0.15,
+    leadScore: 0,
+    x: detection.x,
+    y: detection.y,
+    width: detection.width,
+    height: detection.height,
+    vx: 0,
+    vy: 0,
+    vw: 0,
+    vh: 0,
+    misses: 0,
+    ageFrames: 1,
+    hits: 1,
+    createdAt: timestamp,
+    lastSeenAt: timestamp,
+    lastDetectedAt: timestamp,
+    previousSeenAt: null,
+    lastEvidence: null,
+    predicted: false,
+    association: "high_confidence"
+  };
+  nextTrackIdRef.current += 1;
+  return track;
+}
+
+function predictTrack(track: TrackedVehicle, timestamp: number): void {
+  const seconds = Math.min(0.5, Math.max(0, (timestamp - track.lastSeenAt) / 1000));
+  if (seconds <= 0) return;
+  track.x = clamp(track.x + track.vx * seconds, 0, 1 - track.width);
+  track.y = clamp(track.y + track.vy * seconds, 0, 1 - track.height);
+  track.width = clamp(track.width + track.vw * seconds, 0.01, 1);
+  track.height = clamp(track.height + track.vh * seconds, 0.01, 1);
+  track.lastSeenAt = timestamp;
+}
+
+function updateMatchedTrack(
+  track: TrackedVehicle,
+  detection: VehicleDetection,
+  iou: number,
+  timestamp: number,
+  hostSpeedMetresPerSecond: number | null,
+  association: VehicleTrackEvidence["tracking"]["association"]
+): void {
+  const previous = { ...track };
+  const seconds = Math.max(0.08, (timestamp - track.lastDetectedAt) / 1000);
+  const alpha = association === "high_confidence" ? 0.44 : 0.28;
+  const nextX = lerp(track.x, detection.x, alpha);
+  const nextY = lerp(track.y, detection.y, alpha);
+  const nextWidth = lerp(track.width, detection.width, alpha);
+  const nextHeight = lerp(track.height, detection.height, alpha);
+
+  track.vx = smoothVelocity(track.vx, (detection.x - previous.x) / seconds);
+  track.vy = smoothVelocity(track.vy, (detection.y - previous.y) / seconds);
+  track.vw = smoothVelocity(track.vw, (detection.width - previous.width) / seconds);
+  track.vh = smoothVelocity(track.vh, (detection.height - previous.height) / seconds);
+  track.x = clamp(nextX, 0, 1 - nextWidth);
+  track.y = clamp(nextY, 0, 1 - nextHeight);
+  track.width = clamp(nextWidth, 0.01, 1);
+  track.height = clamp(nextHeight, 0.01, 1);
+  track.confidence = detection.confidence;
+  track.detectionConfidence = detection.confidence;
+  track.trackConfidence = clamp(track.trackConfidence * 0.82 + detection.confidence * 0.18 + Math.min(0.1, iou * 0.08), 0, 1);
+  track.stability = clamp(track.stability * 0.8 + iou * 0.2 + (association === "high_confidence" ? 0.04 : 0), 0, 1);
+  track.misses = 0;
+  track.hits += 1;
+  track.ageFrames += 1;
+  track.previousSeenAt = previous.lastSeenAt;
+  track.lastSeenAt = timestamp;
+  track.lastDetectedAt = timestamp;
+  track.predicted = false;
+  track.association = association;
+  track.lastEvidence = buildEvidence(track, detection, previous, iou, timestamp, hostSpeedMetresPerSecond, association, "searching");
+}
+
+function calculateLeadScore(track: TrackedVehicle, wasPreviousLead: boolean): number {
+  const centerX = track.x + track.width / 2;
+  const centerY = track.y + track.height / 2;
+  const centerScore = 1 - Math.min(1, Math.abs(centerX - 0.5) * 2.25);
+  const verticalScore = clamp((centerY - 0.32) / 0.55, 0, 1);
+  const sizeScore = clamp(Math.sqrt(track.width * track.height) / 0.38, 0, 1);
+  const ageScore = clamp(track.ageFrames / 16, 0, 1);
+  const stabilityScore = track.stability;
+  const confidenceScore = track.trackConfidence;
+  const previousLeadBoost = wasPreviousLead ? 0.46 : 0;
+  const predictedPenalty = track.predicted ? 0.18 : 0;
+  return (
+    centerScore * 0.28 +
+    verticalScore * 0.16 +
+    sizeScore * 0.2 +
+    confidenceScore * 0.18 +
+    ageScore * 0.08 +
+    stabilityScore * 0.1 +
+    previousLeadBoost -
+    predictedPenalty
+  );
+}
+
+function centerDistanceBetween(a: Pick<TrackedVehicle | VehicleDetection, "x" | "y" | "width" | "height">, b: Pick<TrackedVehicle | VehicleDetection, "x" | "y" | "width" | "height">): number {
+  return Math.hypot(a.x + a.width / 2 - (b.x + b.width / 2), a.y + a.height / 2 - (b.y + b.height / 2));
+}
+
+function inDetectionConcernArea(detection: VehicleDetection): boolean {
+  const center = detection.x + detection.width / 2;
+  const rightEdge = detection.x + detection.width;
+  return (center > 0.18 && center < 0.82) || (rightEdge > 0.48 && detection.x < 0.86);
+}
+
+function inTrackConcernArea(track: TrackedVehicle): boolean {
+  const center = track.x + track.width / 2;
+  const rightEdge = track.x + track.width;
+  return (center > 0.16 && center < 0.84) || (rightEdge > 0.48 && track.x < 0.88);
+}
+
+function lerp(from: number, to: number, alpha: number): number {
+  return from + (to - from) * alpha;
+}
+
+function smoothVelocity(previous: number, next: number): number {
+  return clamp(previous * 0.68 + next * 0.32, -1.5, 1.5);
 }
 
 function estimateDistance(label: TrackedVehicle["label"], boxWidthRatio: number): Pick<VehicleTrackEvidence, "estimatedDistanceMetres" | "estimatedCarLengthsAhead"> {
@@ -632,6 +897,14 @@ function boxIoU(a: Pick<TrackedVehicle | VehicleDetection | HudTarget, "x" | "y"
 function relativeMotionLabel(motion: VehicleRelativeMotion): string {
   if (motion === "moving_away") return "MOVING AWAY";
   return motion.toUpperCase();
+}
+
+function lockStateLabel(state: VehicleLockDisplayState): string {
+  if (state === "strong_lock") return "STRONG LOCK";
+  if (state === "weak_lock") return "WEAK LOCK";
+  if (state === "lost_target") return "LOST TARGET";
+  if (state === "no_vehicle") return "NO VEHICLE";
+  return "SEARCHING";
 }
 
 function getHudConfidenceThreshold(options: { auto: boolean; sensitivity: number }): number {
