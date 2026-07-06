@@ -129,7 +129,7 @@ export function ReviewClient() {
               </a>
             </div>
           </div>
-          {replayMode ? <ReplayMode session={session} videoUrl={videoUrl} /> : <video className="w-full rounded-lg border border-cockpit-line bg-black" src={videoUrl} controls playsInline preload="metadata" />}
+          {replayMode ? <ReplayMode session={session} videoUrl={videoUrl} /> : <video className="w-full rounded-lg border border-cockpit-line bg-black" src={videoUrl} controls playsInline preload="auto" />}
         </section>
       ) : (
         <section className="rounded-lg border border-cockpit-line bg-cockpit-900 p-4 text-sm text-slate-400">No playable video was saved for this session.</section>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { metresPerSecondToKmh } from "@/lib/drive-utils";
 import type { DriveSession, GpsSample, HudFrame, MotionSample, OrientationSample } from "@/types/drive";
@@ -8,12 +8,19 @@ import { TargetDistancePanel } from "./TargetDistancePanel";
 
 export function ReplayMode({ session, videoUrl }: { session: DriveSession; videoUrl: string }) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const lastUiUpdateRef = useRef(0);
   const [currentTime, setCurrentTime] = useState(0);
   const replayTimestamp = session.startedAt + currentTime * 1000;
   const gps = useMemo(() => nearest(session.gpsSamples, replayTimestamp), [replayTimestamp, session.gpsSamples]);
   const motion = useMemo(() => nearest(session.motionSamples, replayTimestamp), [replayTimestamp, session.motionSamples]);
   const orientation = useMemo(() => nearest(session.orientationSamples, replayTimestamp), [replayTimestamp, session.orientationSamples]);
   const hudFrame = useMemo(() => nearest(session.hudFrames ?? [], replayTimestamp), [replayTimestamp, session.hudFrames]);
+  const updateReplayTime = useCallback((time: number, force = false) => {
+    const now = performance.now();
+    if (!force && now - lastUiUpdateRef.current < 220) return;
+    lastUiUpdateRef.current = now;
+    setCurrentTime(time);
+  }, []);
 
   return (
     <section className="rounded-lg border border-signal-blue/40 bg-cockpit-900 p-3 shadow-glow">
@@ -33,9 +40,9 @@ export function ReplayMode({ session, videoUrl }: { session: DriveSession; video
         src={videoUrl}
         controls
         playsInline
-        preload="metadata"
-        onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
-        onSeeked={(event) => setCurrentTime(event.currentTarget.currentTime)}
+        preload="auto"
+        onTimeUpdate={(event) => updateReplayTime(event.currentTarget.currentTime)}
+        onSeeked={(event) => updateReplayTime(event.currentTarget.currentTime, true)}
       />
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
         <ReplayMetric label="Own speed" value={`${metresPerSecondToKmh(gps?.speedMetresPerSecond).toFixed(0)} km/h`} />

@@ -62,7 +62,8 @@ type LeadLockState = {
 };
 
 const YOLO_MODEL_NAME = "yolov8n-onnx";
-const DETECTION_INTERVAL_MS = 180;
+const DETECTION_INTERVAL_MS = 420;
+const RECORDING_FRAME_RATE = 30;
 const TRACK_IOU_THRESHOLD = 0.18;
 const MAX_TRACK_MISSES = 12;
 const MAX_HUD_TARGETS = 4;
@@ -82,6 +83,9 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
   const mimeTypeRef = useRef("video/webm");
   const animationFrameRef = useRef<number | null>(null);
   const detectionTimerRef = useRef<number | null>(null);
+  const videoFrameCallbackRef = useRef<number | null>(null);
+  const compositeVideoRef = useRef<HTMLVideoElement | null>(null);
+  const drawingActiveRef = useRef(false);
   const ocrTimerRef = useRef<number | null>(null);
   const ocrBusyRef = useRef(false);
   const detectorRef = useRef<YoloVehicleDetector | null>(null);
@@ -260,7 +264,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
     if (detectorStatusRef.current !== "ready" || !detectorRef.current) return;
 
     let detectionBusy = false;
-    detectionTimerRef.current = window.setInterval(() => {
+    const runDetection = () => {
       if (detectionBusy) return;
       detectionBusy = true;
       const threshold = getHudConfidenceThreshold(hudSensitivityOptionsRef.current);
@@ -290,7 +294,9 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
         .finally(() => {
           detectionBusy = false;
         });
-    }, DETECTION_INTERVAL_MS);
+    };
+    detectionTimerRef.current = window.setInterval(runDetection, DETECTION_INTERVAL_MS);
+    runDetection();
     if (plateOcrEnabled) startPlateOcr(video);
   }, [getOverlayMetrics, startPlateOcr]);
 
@@ -300,6 +306,8 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
       video.muted = true;
       video.playsInline = true;
       video.srcObject = mediaStream;
+      compositeVideoRef.current = video;
+      drawingActiveRef.current = true;
       await video.play();
 
       const canvas = document.createElement("canvas");
@@ -308,15 +316,38 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
       const ctx = canvas.getContext("2d");
       if (!ctx) throw new Error("Canvas recording is not available in this browser.");
 
-      const draw = () => {
+      const drawFrame = () => {
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         drawHud(ctx, hudTargetsRef.current, canvas.width, canvas.height);
-        animationFrameRef.current = window.requestAnimationFrame(draw);
       };
-      draw();
+      const scheduleVideoFrame = () => {
+        if (!drawingActiveRef.current) return;
+        const requestVideoFrameCallback = "requestVideoFrameCallback" in video ? video.requestVideoFrameCallback.bind(video) : null;
+        if (requestVideoFrameCallback) {
+          videoFrameCallbackRef.current = requestVideoFrameCallback(() => {
+            if (!drawingActiveRef.current) return;
+            drawFrame();
+            scheduleVideoFrame();
+          });
+          return;
+        }
+        let lastDrawAt = 0;
+        const frameInterval = 1000 / RECORDING_FRAME_RATE;
+        const drawLoop = (now: number) => {
+          if (!drawingActiveRef.current) return;
+          if (now - lastDrawAt >= frameInterval) {
+            lastDrawAt = now;
+            drawFrame();
+          }
+          animationFrameRef.current = window.requestAnimationFrame(drawLoop);
+        };
+        animationFrameRef.current = window.requestAnimationFrame(drawLoop);
+      };
+      drawFrame();
+      scheduleVideoFrame();
       await startHudDetection(video, plateOcrEnabled);
 
-      const canvasStream = canvas.captureStream(30);
+      const canvasStream = canvas.captureStream(RECORDING_FRAME_RATE);
       mediaStream.getAudioTracks().forEach((track) => canvasStream.addTrack(track));
       compositeStreamRef.current = canvasStream;
       return canvasStream;
@@ -386,10 +417,15 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
   }, [applyCameraLens, audio, getSupportedMimeType, quality, startCompositeRecording]);
 
   const stop = useCallback(async () => {
+    drawingActiveRef.current = false;
     if (animationFrameRef.current !== null) window.cancelAnimationFrame(animationFrameRef.current);
+    if (videoFrameCallbackRef.current !== null && compositeVideoRef.current && "cancelVideoFrameCallback" in compositeVideoRef.current) {
+      compositeVideoRef.current.cancelVideoFrameCallback(videoFrameCallbackRef.current);
+    }
     if (detectionTimerRef.current !== null) window.clearInterval(detectionTimerRef.current);
     if (ocrTimerRef.current !== null) window.clearInterval(ocrTimerRef.current);
     animationFrameRef.current = null;
+    videoFrameCallbackRef.current = null;
     detectionTimerRef.current = null;
     ocrTimerRef.current = null;
     ocrBusyRef.current = false;
@@ -434,6 +470,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
     stream?.getTracks().forEach((track) => track.stop());
     compositeStreamRef.current?.getTracks().forEach((track) => track.stop());
     compositeStreamRef.current = null;
+    compositeVideoRef.current = null;
     setStream(null);
     return stopped;
   }, [stream]);
