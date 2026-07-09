@@ -528,7 +528,7 @@ function updateTracks(tracks: TrackedVehicle[], detections: VehicleDetection[], 
   associateDetections("low_confidence", 0.22);
 
   detections.forEach((detection, index) => {
-    if (!unmatchedDetections.has(index) || detection.confidence < 0.34 || !inDetectionConcernArea(detection)) return;
+    if (!unmatchedDetections.has(index) || detection.confidence < 0.34 || !isPlausibleRoadVehicle(detection) || !inDetectionConcernArea(detection)) return;
     const track = createTrack(detection, timestamp, nextTrackIdRef);
     track.lastEvidence = buildEvidence(track, detection, null, null, timestamp, hostSpeedMetresPerSecond, "high_confidence", "searching");
     tracks.push(track);
@@ -557,7 +557,7 @@ function updateTracks(tracks: TrackedVehicle[], detections: VehicleDetection[], 
   function associateDetections(association: VehicleTrackEvidence["tracking"]["association"], minimumConfidence: number) {
     const candidates = detections
       .map((detection, index) => ({ detection, index }))
-      .filter(({ detection, index }) => unmatchedDetections.has(index) && detection.confidence >= minimumConfidence)
+      .filter(({ detection, index }) => unmatchedDetections.has(index) && detection.confidence >= minimumConfidence && isPlausibleRoadVehicle(detection))
       .sort((a, b) => b.detection.confidence - a.detection.confidence);
 
     candidates.forEach(({ detection, index }) => {
@@ -635,7 +635,13 @@ function buildHudTargets(updates: TrackUpdate[], lead: TrackedVehicle | null, lo
 }
 
 function updateLeadLock(tracks: TrackedVehicle[], lock: LeadLockState, timestamp: number): TrackedVehicle | null {
-  const leadable = tracks.filter((track) => inTrackConcernArea(track) && track.trackConfidence > 0.12);
+  const leadable = tracks.filter(
+    (track) =>
+      inTrackConcernArea(track) &&
+      isPlausibleRoadVehicle(track) &&
+      track.trackConfidence > 0.2 &&
+      (track.id === lock.trackId || (track.hits >= 2 && track.detectionConfidence >= 0.42))
+  );
   leadable.forEach((track) => {
     track.leadScore = calculateLeadScore(track, track.id === lock.trackId);
   });
@@ -870,14 +876,24 @@ function centerDistanceBetween(a: Pick<TrackedVehicle | VehicleDetection, "x" | 
 
 function inDetectionConcernArea(detection: VehicleDetection): boolean {
   const center = detection.x + detection.width / 2;
-  const rightEdge = detection.x + detection.width;
-  return (center > 0.18 && center < 0.82) || (rightEdge > 0.48 && detection.x < 0.86);
+  return center > 0.16 && center < 0.88;
 }
 
 function inTrackConcernArea(track: TrackedVehicle): boolean {
   const center = track.x + track.width / 2;
-  const rightEdge = track.x + track.width;
-  return (center > 0.16 && center < 0.84) || (rightEdge > 0.48 && track.x < 0.88);
+  return center > 0.14 && center < 0.9;
+}
+
+function isPlausibleRoadVehicle(target: Pick<TrackedVehicle | VehicleDetection, "label" | "x" | "y" | "width" | "height">): boolean {
+  const centerX = target.x + target.width / 2;
+  const bottom = target.y + target.height;
+  const aspectRatio = target.width / Math.max(0.001, target.height);
+  const area = target.width * target.height;
+  const minimumBottom = 0.34 + Math.abs(centerX - 0.5) * 0.16;
+  const minimumAspect = target.label === "motorcycle" ? 0.16 : target.label === "bus" || target.label === "truck" ? 0.3 : 0.42;
+  const maximumAspect = target.label === "motorcycle" ? 1.8 : 4.2;
+
+  return bottom >= minimumBottom && area >= 0.00035 && area <= 0.58 && aspectRatio >= minimumAspect && aspectRatio <= maximumAspect;
 }
 
 function lerp(from: number, to: number, alpha: number): number {
