@@ -42,6 +42,7 @@ type TrackedVehicle = {
   lastSeenAt: number;
   lastDetectedAt: number;
   previousSeenAt: number | null;
+  relativeSpeedEstimateKmh: number | null;
   lastEvidence: VehicleTrackEvidence | null;
   predicted: boolean;
   association: VehicleTrackEvidence["tracking"]["association"];
@@ -67,7 +68,6 @@ const DETECTION_INTERVAL_MS = 280;
 const RECORDING_FRAME_RATE = 30;
 const TRACK_IOU_THRESHOLD = 0.18;
 const MAX_TRACK_MISSES = 12;
-const MAX_HUD_TARGETS = 4;
 const LEAD_SWITCH_MARGIN = 0.34;
 const LEAD_SWITCH_HOLD_MS = 1500;
 const WEAK_LOCK_MS = 750;
@@ -138,9 +138,9 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
   }, []);
 
   const buildHudLabel = useCallback((target: HudTarget) => {
-    const lock = target.displayState === "weak_lock" ? "WEAK LOCK" : target.lockState === "locked" ? "LOCK" : "VEH";
-    const plate = target.plateText && (target.plateConfidence ?? 0) >= 90 ? ` ${target.plateText}` : "";
-    return `${lock}${plate} ${relativeMotionLabel(target.relativeMotionEstimate)} RISK ${target.closingRisk.toUpperCase()} TC${Math.round(target.trackConfidence * 100)}`;
+    const speed = formatRelativeSpeed(target.relativeSpeedEstimateKmh);
+    const plate = target.plateText && (target.plateConfidence ?? 0) >= 90 ? `  ${target.plateText}` : "";
+    return `${speed}${plate}`;
   }, []);
 
   const drawTelemetryOverlay = useCallback((ctx: CanvasRenderingContext2D, metrics: HudOverlayMetrics, targets: HudTarget[], width: number, height: number) => {
@@ -168,17 +168,18 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
   }, []);
 
   const drawHud = useCallback((ctx: CanvasRenderingContext2D, targets: HudTarget[], width: number, height: number) => {
+    const target = targets.find((candidate) => candidate.lockState === "locked") ?? null;
     ctx.save();
     ctx.lineWidth = Math.max(3, width * 0.003);
     ctx.font = `${Math.max(18, width * 0.018)}px monospace`;
-    targets.forEach((target) => {
-      const color = target.lockState === "locked" ? "#4ade80" : "#f59e0b";
+    if (target) {
       const x = target.x * width;
       const y = target.y * height;
       const boxWidth = target.width * width;
       const boxHeight = target.height * height;
-      ctx.strokeStyle = color;
-      ctx.fillStyle = color;
+      ctx.globalAlpha = target.displayState === "strong_lock" ? 1 : 0.58;
+      ctx.strokeStyle = "#4ade80";
+      ctx.fillStyle = "#4ade80";
       ctx.strokeRect(x, y, boxWidth, boxHeight);
       const label = buildHudLabel(target);
       const labelWidth = ctx.measureText(label).width + 14;
@@ -186,7 +187,12 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
       ctx.fillRect(x, labelY, labelWidth, 26);
       ctx.fillStyle = "#050607";
       ctx.fillText(label, x + 7, labelY + 19);
-    });
+    } else {
+      const reticleSize = Math.min(width, height) * 0.18;
+      ctx.globalAlpha = 0.28;
+      ctx.strokeStyle = "#4ade80";
+      ctx.strokeRect((width - reticleSize) / 2, (height - reticleSize) / 2, reticleSize, reticleSize);
+    }
     ctx.restore();
     drawTelemetryOverlay(ctx, getOverlayMetrics(), targets, width, height);
   }, [buildHudLabel, drawTelemetryOverlay, getOverlayMetrics]);
@@ -281,9 +287,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
           const lead = updateLeadLock(tracksRef.current, leadLockRef.current, timestamp);
           const targets = buildHudTargets(updates, lead, leadLockRef.current, plateTextByTrackRef.current, plateConfidenceByTrackRef.current, plateMemoryRef.current);
           const leadTarget = lead ? targets.find((target) => target.id === lead.id) ?? null : null;
-          const visibleTargets = leadTarget
-            ? [leadTarget, ...targets.filter((target) => target.id !== leadTarget.id).slice(0, MAX_HUD_TARGETS - 1)]
-            : targets.slice(0, MAX_HUD_TARGETS);
+          const visibleTargets = leadTarget ? [leadTarget] : [];
           hudTargetsRef.current = visibleTargets;
           hudFramesRef.current.push({
             timestamp,
@@ -605,6 +609,7 @@ function buildHudTargets(updates: TrackUpdate[], lead: TrackedVehicle | null, lo
         plateConfidence: memory?.confidence ?? plateConfidences[track.id] ?? null,
         estimatedDistanceMetres: evidence.estimatedDistanceMetres,
         estimatedCarLengthsAhead: evidence.estimatedCarLengthsAhead,
+        relativeSpeedEstimateKmh: evidence.relativeSpeedEstimateKmh,
         relativeMotionEstimate: evidence.relativeMotionEstimate,
         closingRisk: evidence.closingRisk,
         closingRiskScore: evidence.closingRiskScore,
@@ -722,6 +727,17 @@ function buildEvidence(
   const centerDeltaX = previousCenterX !== null && seconds ? (centerX - previousCenterX) / seconds : null;
   const centerDeltaY = previousCenterY !== null && seconds ? (centerY - previousCenterY) / seconds : null;
   const { estimatedDistanceMetres, estimatedCarLengthsAhead } = estimateDistance(track.label, track.width);
+  const previousDistanceMetres = previous ? estimateDistance(previous.label, previous.width).estimatedDistanceMetres : null;
+  const rawRelativeSpeedEstimateKmh =
+    estimatedDistanceMetres !== null && previousDistanceMetres !== null && seconds
+      ? clamp(((previousDistanceMetres - estimatedDistanceMetres) / seconds) * 3.6, -150, 150)
+      : null;
+  const relativeSpeedEstimateKmh =
+    rawRelativeSpeedEstimateKmh === null
+      ? track.relativeSpeedEstimateKmh
+      : previous?.relativeSpeedEstimateKmh !== null && previous?.relativeSpeedEstimateKmh !== undefined
+        ? lerp(previous.relativeSpeedEstimateKmh, rawRelativeSpeedEstimateKmh, 0.24)
+        : rawRelativeSpeedEstimateKmh;
   const relativeMotionEstimate = classifyRelativeMotion(scaleDeltaPerSecond, centerDeltaX, centerDeltaY);
   const { closingRisk, closingRiskScore, motionBasis } = classifyClosingRisk(relativeMotionEstimate, scaleDeltaPerSecond, centerX, boxAreaRatio, hostSpeedMetresPerSecond, estimatedCarLengthsAhead);
 
@@ -748,6 +764,7 @@ function buildEvidence(
     hostSpeedMetresPerSecond,
     estimatedDistanceMetres,
     estimatedCarLengthsAhead,
+    relativeSpeedEstimateKmh,
     relativeMotionEstimate,
     closingRisk,
     closingRiskScore,
@@ -790,6 +807,7 @@ function createTrack(detection: VehicleDetection, timestamp: number, nextTrackId
     lastSeenAt: timestamp,
     lastDetectedAt: timestamp,
     previousSeenAt: null,
+    relativeSpeedEstimateKmh: null,
     lastEvidence: null,
     predicted: false,
     association: "high_confidence"
@@ -845,6 +863,7 @@ function updateMatchedTrack(
   track.predicted = false;
   track.association = association;
   track.lastEvidence = buildEvidence(track, detection, previous, iou, timestamp, hostSpeedMetresPerSecond, association, "searching");
+  track.relativeSpeedEstimateKmh = track.lastEvidence.relativeSpeedEstimateKmh;
 }
 
 function calculateLeadScore(track: TrackedVehicle, wasPreviousLead: boolean): number {
@@ -984,6 +1003,12 @@ function boxIoU(a: Pick<TrackedVehicle | VehicleDetection | HudTarget, "x" | "y"
 function relativeMotionLabel(motion: VehicleRelativeMotion): string {
   if (motion === "moving_away") return "MOVING AWAY";
   return motion.toUpperCase();
+}
+
+function formatRelativeSpeed(speedKmh: number | null): string {
+  if (speedKmh === null || !Number.isFinite(speedKmh)) return "REL -- KMH";
+  const rounded = Math.round(speedKmh);
+  return `REL ${rounded > 0 ? "+" : ""}${rounded} KMH`;
 }
 
 function lockStateLabel(state: VehicleLockDisplayState): string {

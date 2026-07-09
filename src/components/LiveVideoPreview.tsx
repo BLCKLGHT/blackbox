@@ -93,28 +93,39 @@ export function LiveVideoPreview({
       ) : (
         <div className="flex h-full items-center justify-center px-6 text-center text-sm text-slate-500">Camera preview will appear after permission is granted.</div>
       )}
-      {hudTargets.length ? (
-        <div className="pointer-events-none absolute inset-0">
-          {hudTargets.map((target) => (
-            <div
-              key={target.id}
-              className={`absolute border-2 ${target.displayState === "strong_lock" ? "border-signal-green text-signal-green" : target.displayState === "weak_lock" ? "border-signal-amber text-signal-amber" : "border-signal-amber/70 text-signal-amber"}`}
-              style={{
-                left: `${target.x * 100}%`,
-                top: `${target.y * 100}%`,
-                width: `${target.width * 100}%`,
-                height: `${target.height * 100}%`
-              }}
+      <div className="pointer-events-none absolute inset-0">
+        <div
+          className={`absolute border-2 border-signal-green transition-all duration-300 ease-out ${
+            locked ? (locked.displayState === "strong_lock" ? "opacity-100 shadow-[0_0_12px_rgba(74,222,128,0.65)]" : "opacity-60") : "opacity-25"
+          }`}
+          style={
+            locked
+              ? {
+                  left: `${locked.x * 100}%`,
+                  top: `${locked.y * 100}%`,
+                  width: `${locked.width * 100}%`,
+                  height: `${locked.height * 100}%`
+                }
+              : {
+                  left: "41%",
+                  top: "41%",
+                  width: "18%",
+                  height: "18%"
+                }
+          }
+        >
+          {locked ? (
+            <span
+              className={`absolute left-0 whitespace-nowrap rounded-sm bg-signal-green px-2 py-1 font-black uppercase text-cockpit-950 ${
+                immersiveFullscreen ? "-bottom-8 text-xs" : "-bottom-7 text-[10px]"
+              }`}
             >
-              <span className={`absolute left-0 whitespace-nowrap rounded-sm px-2 py-1 font-black uppercase ${immersiveFullscreen ? "-bottom-8 text-xs" : "-bottom-7 text-[10px]"} ${target.displayState === "strong_lock" ? "bg-signal-green text-cockpit-950" : "bg-signal-amber text-cockpit-950"}`}>
-                {lockLabel(target.displayState)}
-                {target.plateText && (target.plateConfidence ?? 0) >= 90 ? ` ${target.plateText}` : ""}
-                {` ${motionLabel(target.relativeMotionEstimate)} RISK ${(target.closingRisk ?? "unknown").toUpperCase()} TC${Math.round((target.trackConfidence ?? 0) * 100)}`}
-              </span>
-            </div>
-          ))}
+              {formatRelativeSpeed(locked.relativeSpeedEstimateKmh)}
+              {locked.plateText && (locked.plateConfidence ?? 0) >= 90 ? `  ${locked.plateText}` : ""}
+            </span>
+          ) : null}
         </div>
-      ) : null}
+      </div>
       <div
         className={`pointer-events-none absolute z-10 max-w-[82%] rounded-md border border-signal-green/40 bg-black/70 font-mono font-bold uppercase text-signal-green ${
           immersiveFullscreen
@@ -148,4 +159,10 @@ function lockLabel(state: HudTarget["displayState"] | undefined): string {
   if (state === "lost_target") return "LOST";
   if (state === "no_vehicle") return "NO VEHICLE";
   return "SEARCHING";
+}
+
+function formatRelativeSpeed(speedKmh: number | null | undefined): string {
+  if (speedKmh === null || speedKmh === undefined || !Number.isFinite(speedKmh)) return "REL -- KMH";
+  const rounded = Math.round(speedKmh);
+  return `REL ${rounded > 0 ? "+" : ""}${rounded} KMH`;
 }
