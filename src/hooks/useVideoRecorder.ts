@@ -2,6 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import { getVideoConstraints } from "@/lib/settings";
+import { deleteRecordingChunks, getRecordingChunks, saveRecordingChunk } from "@/lib/storage";
 import { YoloVehicleDetector, type VehicleDetection } from "@/lib/yolo-vehicle-detector";
 import type { CameraLens, HudFrame, HudOverlayMetrics, HudTarget, RecordedVideoChunk, VehicleClosingRisk, VehicleLockDisplayState, VehicleRelativeMotion, VehicleTrackEvidence, VideoQuality } from "@/types/drive";
 
@@ -62,7 +63,7 @@ type LeadLockState = {
 };
 
 const YOLO_MODEL_NAME = "yolov8n-onnx";
-const DETECTION_INTERVAL_MS = 420;
+const DETECTION_INTERVAL_MS = 280;
 const RECORDING_FRAME_RATE = 30;
 const TRACK_IOU_THRESHOLD = 0.18;
 const MAX_TRACK_MISSES = 12;
@@ -78,8 +79,10 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
   const hudFramesRef = useRef<HudFrame[]>([]);
   const [error, setError] = useState<string | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<BlobPart[]>([]);
   const recordedChunksRef = useRef<RecordedVideoChunk[]>([]);
+  const recordingIdRef = useRef<string | null>(null);
+  const chunkSequenceRef = useRef(0);
+  const chunkWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
   const mimeTypeRef = useRef("video/webm");
   const animationFrameRef = useRef<number | null>(null);
   const detectionTimerRef = useRef<number | null>(null);
@@ -393,11 +396,22 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
       const mimeType = getSupportedMimeType();
       const recorder = mimeType ? new MediaRecorder(recordingStream, { mimeType }) : new MediaRecorder(recordingStream);
       mimeTypeRef.current = recorder.mimeType || mimeType || "video/webm";
-      chunksRef.current = [];
+      recordingIdRef.current = `recording-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+      chunkSequenceRef.current = 0;
+      chunkWriteQueueRef.current = Promise.resolve();
       recordedChunksRef.current = [];
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
-          chunksRef.current.push(event.data);
+          const recordingId = recordingIdRef.current;
+          const sequence = chunkSequenceRef.current;
+          chunkSequenceRef.current += 1;
+          if (recordingId) {
+            chunkWriteQueueRef.current = chunkWriteQueueRef.current
+              .then(() => saveRecordingChunk(recordingId, sequence, event.data))
+              .catch(() => {
+                setError("Video storage is full or unavailable. Stop the drive to preserve the data already recorded.");
+              });
+          }
           recordedChunksRef.current.push({
             id: `chunk-${Date.now()}-${recordedChunksRef.current.length}`,
             timestamp: Date.now(),
@@ -445,12 +459,17 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
     const recorder = recorderRef.current;
     const stopped = new Promise<Blob | null>((resolve) => {
       if (!recorder || recorder.state === "inactive") {
-        resolve(chunksRef.current.length ? new Blob(chunksRef.current, { type: mimeTypeRef.current }) : null);
+        void buildRecordedBlob(recordingIdRef.current, mimeTypeRef.current, chunkWriteQueueRef.current).then(resolve);
         return;
       }
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
-          chunksRef.current.push(event.data);
+          const recordingId = recordingIdRef.current;
+          const sequence = chunkSequenceRef.current;
+          chunkSequenceRef.current += 1;
+          if (recordingId) {
+            chunkWriteQueueRef.current = chunkWriteQueueRef.current.then(() => saveRecordingChunk(recordingId, sequence, event.data));
+          }
           recordedChunksRef.current.push({
             id: `chunk-${Date.now()}-${recordedChunksRef.current.length}`,
             timestamp: Date.now(),
@@ -461,7 +480,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
       };
       recorder.onstop = () => {
         window.setTimeout(() => {
-          resolve(chunksRef.current.length ? new Blob(chunksRef.current, { type: recorder.mimeType || mimeTypeRef.current }) : null);
+          void buildRecordedBlob(recordingIdRef.current, recorder.mimeType || mimeTypeRef.current, chunkWriteQueueRef.current).then(resolve);
         }, 80);
       };
       if (typeof recorder.requestData === "function") recorder.requestData();
@@ -483,8 +502,19 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
 }
 
 function pruneRecordedChunks(chunks: RecordedVideoChunk[]): void {
-  const oldestProtectedTime = Date.now() - 6 * 60 * 1000;
+  const oldestProtectedTime = Date.now() - 2 * 60 * 1000 - 10 * 1000;
   while (chunks.length && chunks[0].timestamp < oldestProtectedTime) chunks.shift();
+}
+
+async function buildRecordedBlob(recordingId: string | null, mimeType: string, writeQueue: Promise<void>): Promise<Blob | null> {
+  if (!recordingId) return null;
+  try {
+    await writeQueue;
+    const chunks = await getRecordingChunks(recordingId);
+    return chunks.length ? new Blob(chunks, { type: mimeType }) : null;
+  } finally {
+    await deleteRecordingChunks(recordingId).catch(() => undefined);
+  }
 }
 
 function updateTracks(tracks: TrackedVehicle[], detections: VehicleDetection[], timestamp: number, nextTrackIdRef: { current: number }, hostSpeedMetresPerSecond: number | null): TrackUpdate[] {
@@ -498,7 +528,7 @@ function updateTracks(tracks: TrackedVehicle[], detections: VehicleDetection[], 
   associateDetections("low_confidence", 0.22);
 
   detections.forEach((detection, index) => {
-    if (!unmatchedDetections.has(index) || detection.confidence < 0.42 || !inDetectionConcernArea(detection)) return;
+    if (!unmatchedDetections.has(index) || detection.confidence < 0.34 || !inDetectionConcernArea(detection)) return;
     const track = createTrack(detection, timestamp, nextTrackIdRef);
     track.lastEvidence = buildEvidence(track, detection, null, null, timestamp, hostSpeedMetresPerSecond, "high_confidence", "searching");
     tracks.push(track);
@@ -532,14 +562,18 @@ function updateTracks(tracks: TrackedVehicle[], detections: VehicleDetection[], 
 
     candidates.forEach(({ detection, index }) => {
       const match = tracks
-        .filter((track) => unmatchedTracks.has(track.id) && track.label === detection.label)
+        .filter((track) => unmatchedTracks.has(track.id))
         .map((track) => {
           const iou = boxIoU(track, detection);
           const centerDistance = centerDistanceBetween(track, detection);
-          const associationScore = iou * 0.72 + Math.max(0, 1 - centerDistance * 3.2) * 0.28 + track.trackConfidence * 0.12;
-          return { track, iou, associationScore };
+          const targetDiagonal = Math.hypot(track.width, track.height);
+          const motionGate = Math.min(0.42, Math.max(0.13, targetDiagonal * 1.65 + track.misses * 0.035));
+          const proximity = Math.max(0, 1 - centerDistance / motionGate);
+          const classCompatibility = track.label === detection.label ? 1 : 0.72;
+          const associationScore = (iou * 0.46 + proximity * 0.42 + track.trackConfidence * 0.12) * classCompatibility;
+          return { track, iou, associationScore, centerDistance, motionGate };
         })
-        .filter((candidate) => candidate.iou >= TRACK_IOU_THRESHOLD || candidate.associationScore >= 0.42)
+        .filter((candidate) => candidate.iou >= TRACK_IOU_THRESHOLD || (candidate.centerDistance <= candidate.motionGate && candidate.associationScore >= 0.3))
         .sort((a, b) => b.associationScore - a.associationScore)[0];
       if (!match) return;
       updateMatchedTrack(match.track, detection, match.iou, timestamp, hostSpeedMetresPerSecond, association);

@@ -197,7 +197,7 @@ export function useDriveSession() {
       const now = Date.now();
       const duration = Math.max(0, Math.floor((now - activeStartedAtRef.current) / 1000));
       setElapsed(duration);
-      if (now - lastSessionSnapshotAtRef.current < 1000) return;
+      if (now - lastSessionSnapshotAtRef.current < 5000) return;
       lastSessionSnapshotAtRef.current = now;
       setGpsTrail(geo.samplesRef.current.slice(-80));
       detectImpact(motion.motionSamplesRef.current, geo.samplesRef.current);

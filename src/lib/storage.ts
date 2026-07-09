@@ -2,10 +2,18 @@ import type { DriveSession, GpsSample, MotionSample } from "@/types/drive";
 import { csvEscape } from "@/lib/drive-utils";
 
 const DB_NAME = "black-box-v4";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const SESSION_STORE = "sessions";
 const VIDEO_STORE = "videos";
+const RECORDING_CHUNK_STORE = "recording-chunks";
 const LAST_SESSION_KEY = "last";
+
+type StoredRecordingChunk = {
+  key: string;
+  recordingId: string;
+  sequence: number;
+  blob: Blob;
+};
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -14,6 +22,10 @@ function openDb(): Promise<IDBDatabase> {
       const db = request.result;
       if (!db.objectStoreNames.contains(SESSION_STORE)) db.createObjectStore(SESSION_STORE);
       if (!db.objectStoreNames.contains(VIDEO_STORE)) db.createObjectStore(VIDEO_STORE);
+      if (!db.objectStoreNames.contains(RECORDING_CHUNK_STORE)) {
+        const store = db.createObjectStore(RECORDING_CHUNK_STORE, { keyPath: "key" });
+        store.createIndex("recordingId", "recordingId");
+      }
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
@@ -60,6 +72,59 @@ export async function getVideoBlob(id: string): Promise<Blob | null> {
 
 export async function deleteVideoBlob(id: string): Promise<void> {
   await withStore<undefined>(VIDEO_STORE, "readwrite", (store) => store.delete(id));
+}
+
+export async function saveRecordingChunk(recordingId: string, sequence: number, blob: Blob): Promise<void> {
+  const chunk: StoredRecordingChunk = {
+    key: `${recordingId}:${sequence.toString().padStart(8, "0")}`,
+    recordingId,
+    sequence,
+    blob
+  };
+  await withStore<IDBValidKey>(RECORDING_CHUNK_STORE, "readwrite", (store) => store.put(chunk));
+}
+
+export async function getRecordingChunks(recordingId: string): Promise<Blob[]> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(RECORDING_CHUNK_STORE, "readonly");
+    const index = tx.objectStore(RECORDING_CHUNK_STORE).index("recordingId");
+    const request = index.getAll(IDBKeyRange.only(recordingId));
+    request.onsuccess = () => {
+      const chunks = (request.result as StoredRecordingChunk[]).sort((a, b) => a.sequence - b.sequence);
+      resolve(chunks.map((chunk) => chunk.blob));
+    };
+    request.onerror = () => reject(request.error);
+    tx.oncomplete = () => db.close();
+    tx.onerror = () => {
+      db.close();
+      reject(tx.error);
+    };
+  });
+}
+
+export async function deleteRecordingChunks(recordingId: string): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(RECORDING_CHUNK_STORE, "readwrite");
+    const index = tx.objectStore(RECORDING_CHUNK_STORE).index("recordingId");
+    const request = index.openKeyCursor(IDBKeyRange.only(recordingId));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) return;
+      tx.objectStore(RECORDING_CHUNK_STORE).delete(cursor.primaryKey);
+      cursor.continue();
+    };
+    request.onerror = () => reject(request.error);
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    tx.onerror = () => {
+      db.close();
+      reject(tx.error);
+    };
+  });
 }
 
 export async function deleteExpiredSessions(): Promise<void> {
