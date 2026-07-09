@@ -120,7 +120,7 @@ export function LiveVideoPreview({
                 immersiveFullscreen ? "-bottom-8 text-xs" : "-bottom-7 text-[10px]"
               }`}
             >
-              {formatRelativeSpeed(locked.relativeSpeedEstimateKmh)}
+              {formatVehicleSpeed(locked.estimatedVehicleSpeedKmh)}
               {locked.plateText && (locked.plateConfidence ?? 0) >= 90 ? `  ${locked.plateText}` : ""}
             </span>
           ) : null}
@@ -161,8 +161,7 @@ function lockLabel(state: HudTarget["displayState"] | undefined): string {
   return "SEARCHING";
 }
 
-function formatRelativeSpeed(speedKmh: number | null | undefined): string {
-  if (speedKmh === null || speedKmh === undefined || !Number.isFinite(speedKmh)) return "REL -- KMH";
-  const rounded = Math.round(speedKmh);
-  return `REL ${rounded > 0 ? "+" : ""}${rounded} KMH`;
+function formatVehicleSpeed(speedKmh: number | null | undefined): string {
+  if (speedKmh === null || speedKmh === undefined || !Number.isFinite(speedKmh)) return "EST: -- KM/H";
+  return `EST: ${Math.round(speedKmh)} KM/H`;
 }

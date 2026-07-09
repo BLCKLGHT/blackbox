@@ -138,7 +138,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
   }, []);
 
   const buildHudLabel = useCallback((target: HudTarget) => {
-    const speed = formatRelativeSpeed(target.relativeSpeedEstimateKmh);
+    const speed = formatVehicleSpeed(target.estimatedVehicleSpeedKmh);
     const plate = target.plateText && (target.plateConfidence ?? 0) >= 90 ? `  ${target.plateText}` : "";
     return `${speed}${plate}`;
   }, []);
@@ -610,6 +610,7 @@ function buildHudTargets(updates: TrackUpdate[], lead: TrackedVehicle | null, lo
         estimatedDistanceMetres: evidence.estimatedDistanceMetres,
         estimatedCarLengthsAhead: evidence.estimatedCarLengthsAhead,
         relativeSpeedEstimateKmh: evidence.relativeSpeedEstimateKmh,
+        estimatedVehicleSpeedKmh: evidence.estimatedVehicleSpeedKmh,
         relativeMotionEstimate: evidence.relativeMotionEstimate,
         closingRisk: evidence.closingRisk,
         closingRiskScore: evidence.closingRiskScore,
@@ -738,6 +739,10 @@ function buildEvidence(
       : previous?.relativeSpeedEstimateKmh !== null && previous?.relativeSpeedEstimateKmh !== undefined
         ? lerp(previous.relativeSpeedEstimateKmh, rawRelativeSpeedEstimateKmh, 0.24)
         : rawRelativeSpeedEstimateKmh;
+  const estimatedVehicleSpeedKmh =
+    hostSpeedMetresPerSecond !== null && relativeSpeedEstimateKmh !== null
+      ? clamp(Math.abs(hostSpeedMetresPerSecond * 3.6 - relativeSpeedEstimateKmh), 0, 250)
+      : null;
   const relativeMotionEstimate = classifyRelativeMotion(scaleDeltaPerSecond, centerDeltaX, centerDeltaY);
   const { closingRisk, closingRiskScore, motionBasis } = classifyClosingRisk(relativeMotionEstimate, scaleDeltaPerSecond, centerX, boxAreaRatio, hostSpeedMetresPerSecond, estimatedCarLengthsAhead);
 
@@ -765,6 +770,7 @@ function buildEvidence(
     estimatedDistanceMetres,
     estimatedCarLengthsAhead,
     relativeSpeedEstimateKmh,
+    estimatedVehicleSpeedKmh,
     relativeMotionEstimate,
     closingRisk,
     closingRiskScore,
@@ -1005,10 +1011,9 @@ function relativeMotionLabel(motion: VehicleRelativeMotion): string {
   return motion.toUpperCase();
 }
 
-function formatRelativeSpeed(speedKmh: number | null): string {
-  if (speedKmh === null || !Number.isFinite(speedKmh)) return "REL -- KMH";
-  const rounded = Math.round(speedKmh);
-  return `REL ${rounded > 0 ? "+" : ""}${rounded} KMH`;
+function formatVehicleSpeed(speedKmh: number | null): string {
+  if (speedKmh === null || !Number.isFinite(speedKmh)) return "EST: -- KM/H";
+  return `EST: ${Math.round(speedKmh)} KM/H`;
 }
 
 function lockStateLabel(state: VehicleLockDisplayState): string {

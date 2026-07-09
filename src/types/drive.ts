@@ -46,6 +46,7 @@ export interface VehicleTrackEvidence {
   estimatedDistanceMetres: number | null;
   estimatedCarLengthsAhead: number | null;
   relativeSpeedEstimateKmh: number | null;
+  estimatedVehicleSpeedKmh: number | null;
   relativeMotionEstimate: VehicleRelativeMotion;
   closingRisk: VehicleClosingRisk;
   closingRiskScore: number;
@@ -77,6 +78,7 @@ export interface HudTarget {
   estimatedDistanceMetres: number | null;
   estimatedCarLengthsAhead: number | null;
   relativeSpeedEstimateKmh: number | null;
+  estimatedVehicleSpeedKmh: number | null;
   relativeMotionEstimate: VehicleRelativeMotion;
   closingRisk: VehicleClosingRisk;
   closingRiskScore: number;
