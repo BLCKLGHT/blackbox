@@ -34,9 +34,12 @@ export function useDriveSession() {
       ownSpeedMetresPerSecond: geo.latestGpsRef.current?.speedMetresPerSecond ?? null,
       latitude: geo.latestGpsRef.current?.latitude ?? null,
       longitude: geo.latestGpsRef.current?.longitude ?? null,
-      weather
+      weather,
+      orientationAlpha: motion.latestOrientationRef.current?.alpha ?? null,
+      orientationBeta: motion.latestOrientationRef.current?.beta ?? null,
+      orientationGamma: motion.latestOrientationRef.current?.gamma ?? null
     }),
-    [geo.latestGpsRef, weather]
+    [geo.latestGpsRef, motion.latestOrientationRef, weather]
   );
   const video = useVideoRecorder(settings.videoQuality, settings.audioRecording, getOverlayMetrics);
   const [session, setSession] = useState<DriveSession>(() => createSession(settings.retentionHours));

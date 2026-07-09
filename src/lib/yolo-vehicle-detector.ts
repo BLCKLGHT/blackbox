@@ -12,6 +12,7 @@ export type VehicleDetection = {
   y: number;
   width: number;
   height: number;
+  appearanceSignature?: number[];
 };
 
 type Letterbox = {
@@ -63,7 +64,7 @@ export class YoloVehicleDetector {
     this.ctx = ctx;
   }
 
-  static async load(modelUrl = process.env.NEXT_PUBLIC_YOLO_MODEL_URL ?? DEFAULT_MODEL_URL): Promise<YoloVehicleDetector> {
+  static async load(modelUrl = process.env.NEXT_PUBLIC_DASHCAM_YOLO_MODEL_URL ?? process.env.NEXT_PUBLIC_YOLO_MODEL_URL ?? DEFAULT_MODEL_URL): Promise<YoloVehicleDetector> {
     const ort = await loadOrtRuntime();
     ort.env.wasm.numThreads = 1;
     ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/";

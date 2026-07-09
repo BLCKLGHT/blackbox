@@ -18,6 +18,8 @@ export function useMotionRecorder() {
   const [error, setError] = useState<string | null>(null);
   const motionSamplesRef = useRef<MotionSample[]>([]);
   const orientationSamplesRef = useRef<OrientationSample[]>([]);
+  const latestMotionRef = useRef<MotionSample | null>(null);
+  const latestOrientationRef = useRef<OrientationSample | null>(null);
   const lastMotionUiAtRef = useRef(0);
   const lastOrientationUiAtRef = useRef(0);
   const orientationBaselineRef = useRef<OrientationSample | null>(null);
@@ -61,6 +63,7 @@ export function useMotionRecorder() {
       magnitude
     };
     motionSamplesRef.current.push(sample);
+    latestMotionRef.current = sample;
     if (sample.timestamp - lastMotionUiAtRef.current > 100) {
       lastMotionUiAtRef.current = sample.timestamp;
       setLatestMotion(sample);
@@ -83,6 +86,7 @@ export function useMotionRecorder() {
       gamma: zeroLinear(rawSample.gamma, baseline.gamma)
     };
     orientationSamplesRef.current.push(rawSample);
+    latestOrientationRef.current = zeroedSample;
     if (zeroedSample.timestamp - lastOrientationUiAtRef.current > 100) {
       lastOrientationUiAtRef.current = zeroedSample.timestamp;
       setLatestOrientation(zeroedSample);
@@ -97,6 +101,8 @@ export function useMotionRecorder() {
     lastOrientationUiAtRef.current = 0;
     setLatestMotion(null);
     setLatestOrientation(null);
+    latestMotionRef.current = null;
+    latestOrientationRef.current = null;
     setError(null);
     const motionPermissionPromise = requestMotionPermission();
     const orientationPermissionPromise = requestOrientationPermission();
@@ -122,7 +128,7 @@ export function useMotionRecorder() {
     return { motionSamples: motionSamplesRef.current, orientationSamples: orientationSamplesRef.current };
   }, [onMotion, onOrientation]);
 
-  return { latestMotion, latestOrientation, error, motionSamplesRef, orientationSamplesRef, start, stop };
+  return { latestMotion, latestOrientation, latestMotionRef, latestOrientationRef, error, motionSamplesRef, orientationSamplesRef, start, stop };
 }
 
 function zeroLinear(value: number | null, baseline: number | null): number | null {

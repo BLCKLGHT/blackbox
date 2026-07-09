@@ -26,6 +26,8 @@ type TrackedVehicle = {
   detectionConfidence: number;
   trackConfidence: number;
   stability: number;
+  filterUncertainty: number;
+  lastAppearanceSimilarity: number;
   leadScore: number;
   x: number;
   y: number;
@@ -41,8 +43,11 @@ type TrackedVehicle = {
   createdAt: number;
   lastSeenAt: number;
   lastDetectedAt: number;
+  lastVisualAt: number | null;
   previousSeenAt: number | null;
   relativeSpeedEstimateKmh: number | null;
+  appearanceSignature: number[] | null;
+  horizontalFovDegrees: number;
   lastEvidence: VehicleTrackEvidence | null;
   predicted: boolean;
   association: VehicleTrackEvidence["tracking"]["association"];
@@ -63,8 +68,21 @@ type LeadLockState = {
   displayState: VehicleLockDisplayState;
 };
 
-const YOLO_MODEL_NAME = "yolov8n-onnx";
+type VisualTrackerState = {
+  canvas: HTMLCanvasElement;
+  ctx: CanvasRenderingContext2D;
+  previousFrame: Uint8Array | null;
+  previousTrackId: string | null;
+  previousBox: { x: number; y: number; width: number; height: number } | null;
+  lastRunAt: number;
+  lastUiAt: number;
+};
+
+const YOLO_MODEL_NAME = process.env.NEXT_PUBLIC_DASHCAM_YOLO_MODEL_URL ? "custom-dashcam-yolo-onnx" : "yolov8n-onnx";
 const DETECTION_INTERVAL_MS = 280;
+const LOCKED_DETECTION_INTERVAL_MS = 420;
+const REACQUIRE_DETECTION_INTERVAL_MS = 140;
+const VISUAL_TRACK_INTERVAL_MS = 66;
 const RECORDING_FRAME_RATE = 30;
 const TRACK_IOU_THRESHOLD = 0.18;
 const MAX_TRACK_MISSES = 12;
@@ -110,6 +128,10 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
   const detectorStatusRef = useRef<"idle" | "loading" | "ready" | "unsupported">("idle");
   const plateOcrStatusRef = useRef<"idle" | "ready" | "unsupported">("idle");
   const hudSensitivityOptionsRef = useRef({ auto: true, sensitivity: 55 });
+  const appearanceCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const previousOrientationRef = useRef<Pick<HudOverlayMetrics, "orientationAlpha" | "orientationBeta" | "orientationGamma"> | null>(null);
+  const visualTrackerRef = useRef<VisualTrackerState | null>(null);
+  const horizontalFovDegreesRef = useRef(70);
 
   const getSupportedMimeType = useCallback(() => {
     if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") return "";
@@ -266,7 +288,9 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
         detectorStatusRef.current = "ready";
       } catch {
         detectorStatusRef.current = "unsupported";
-        setError("HUD vehicle detection could not load. Add a YOLO nano ONNX model at /public/models/yolov8n.onnx, or set NEXT_PUBLIC_YOLO_MODEL_URL.");
+        setError(
+          "HUD vehicle detection could not load. Add a YOLO nano ONNX model at /public/models/yolov8n.onnx, or set NEXT_PUBLIC_DASHCAM_YOLO_MODEL_URL."
+        );
         return;
       }
     }
@@ -274,7 +298,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
 
     let detectionBusy = false;
     const runDetection = () => {
-      if (detectionBusy) return;
+      if (detectionBusy || !drawingActiveRef.current) return;
       detectionBusy = true;
       const threshold = getHudConfidenceThreshold(hudSensitivityOptionsRef.current);
       detectorRef.current
@@ -282,8 +306,19 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
         .then((detections) => {
           const timestamp = Date.now();
           const metrics = getOverlayMetrics();
+          attachAppearanceSignatures(video, detections, appearanceCanvasRef);
           prunePlateMemory(plateMemoryRef.current);
-          const updates = updateTracks(tracksRef.current, detections, timestamp, nextTrackIdRef, metrics.ownSpeedMetresPerSecond);
+          const cameraShift = estimateCameraShift(metrics, previousOrientationRef.current);
+          previousOrientationRef.current = metrics;
+          const updates = updateTracks(
+            tracksRef.current,
+            detections,
+            timestamp,
+            nextTrackIdRef,
+            metrics.ownSpeedMetresPerSecond,
+            cameraShift,
+            horizontalFovDegreesRef.current
+          );
           const lead = updateLeadLock(tracksRef.current, leadLockRef.current, timestamp);
           const targets = buildHudTargets(updates, lead, leadLockRef.current, plateTextByTrackRef.current, plateConfidenceByTrackRef.current, plateMemoryRef.current);
           const leadTarget = lead ? targets.find((target) => target.id === lead.id) ?? null : null;
@@ -300,9 +335,11 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
         .catch(() => undefined)
         .finally(() => {
           detectionBusy = false;
+          const state = leadLockRef.current.displayState;
+          const nextInterval = state === "strong_lock" ? LOCKED_DETECTION_INTERVAL_MS : state === "weak_lock" || state === "lost_target" ? REACQUIRE_DETECTION_INTERVAL_MS : DETECTION_INTERVAL_MS;
+          detectionTimerRef.current = window.setTimeout(runDetection, nextInterval);
         });
     };
-    detectionTimerRef.current = window.setInterval(runDetection, DETECTION_INTERVAL_MS);
     runDetection();
     if (plateOcrEnabled) startPlateOcr(video);
   }, [getOverlayMetrics, startPlateOcr]);
@@ -324,6 +361,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
       if (!ctx) throw new Error("Canvas recording is not available in this browser.");
 
       const drawFrame = () => {
+        updateVisualLeadTrack(video, tracksRef.current, leadLockRef.current, visualTrackerRef, hudTargetsRef, setHudTargets);
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         drawHud(ctx, hudTargetsRef.current, canvas.width, canvas.height);
       };
@@ -376,6 +414,8 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
       setStream(mediaStream);
       hudFramesRef.current = [];
       tracksRef.current = [];
+      previousOrientationRef.current = null;
+      visualTrackerRef.current = null;
       nextTrackIdRef.current = 1;
       leadLockRef.current = {
         trackId: null,
@@ -389,6 +429,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
         auto: options.hudSensitivityAuto,
         sensitivity: options.hudSensitivity
       };
+      horizontalFovDegreesRef.current = cameraLensFov(options.cameraLens);
 
       if (typeof MediaRecorder === "undefined") {
         setRecordingSupported(false);
@@ -450,6 +491,8 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
     setHudTargets([]);
     hudTargetsRef.current = [];
     tracksRef.current = [];
+    visualTrackerRef.current = null;
+    previousOrientationRef.current = null;
     leadLockRef.current = {
       trackId: null,
       lockedAt: null,
@@ -521,8 +564,16 @@ async function buildRecordedBlob(recordingId: string | null, mimeType: string, w
   }
 }
 
-function updateTracks(tracks: TrackedVehicle[], detections: VehicleDetection[], timestamp: number, nextTrackIdRef: { current: number }, hostSpeedMetresPerSecond: number | null): TrackUpdate[] {
-  tracks.forEach((track) => predictTrack(track, timestamp));
+function updateTracks(
+  tracks: TrackedVehicle[],
+  detections: VehicleDetection[],
+  timestamp: number,
+  nextTrackIdRef: { current: number },
+  hostSpeedMetresPerSecond: number | null,
+  cameraShift: { x: number; y: number },
+  horizontalFovDegrees: number
+): TrackUpdate[] {
+  tracks.forEach((track) => predictTrack(track, timestamp, cameraShift));
 
   const updates: TrackUpdate[] = [];
   const unmatchedTracks = new Set(tracks.map((track) => track.id));
@@ -533,7 +584,7 @@ function updateTracks(tracks: TrackedVehicle[], detections: VehicleDetection[], 
 
   detections.forEach((detection, index) => {
     if (!unmatchedDetections.has(index) || detection.confidence < 0.34 || !isPlausibleRoadVehicle(detection) || !inDetectionConcernArea(detection)) return;
-    const track = createTrack(detection, timestamp, nextTrackIdRef);
+    const track = createTrack(detection, timestamp, nextTrackIdRef, horizontalFovDegrees);
     track.lastEvidence = buildEvidence(track, detection, null, null, timestamp, hostSpeedMetresPerSecond, "high_confidence", "searching");
     tracks.push(track);
     updates.push({ track, detection, iouWithPrevious: null });
@@ -541,14 +592,15 @@ function updateTracks(tracks: TrackedVehicle[], detections: VehicleDetection[], 
 
   tracks.forEach((track) => {
     if (unmatchedTracks.has(track.id)) {
-      track.misses += 1;
+      const visuallyFresh = track.lastVisualAt !== null && timestamp - track.lastVisualAt < 250;
+      if (!visuallyFresh) track.misses += 1;
       track.ageFrames += 1;
-      track.predicted = true;
-      track.association = "prediction";
-      track.confidence = Math.max(0, track.confidence * 0.72);
-      track.trackConfidence = Math.max(0, track.trackConfidence * 0.84);
-      track.stability = Math.max(0, track.stability * 0.9);
-      track.lastEvidence = buildEvidence(track, null, null, null, timestamp, hostSpeedMetresPerSecond, "prediction", "searching");
+      track.predicted = !visuallyFresh;
+      track.association = visuallyFresh ? "visual_correlation" : "prediction";
+      track.confidence = Math.max(0, track.confidence * (visuallyFresh ? 0.94 : 0.72));
+      track.trackConfidence = Math.max(0, track.trackConfidence * (visuallyFresh ? 0.97 : 0.84));
+      track.stability = Math.max(0, track.stability * (visuallyFresh ? 0.98 : 0.9));
+      track.lastEvidence = buildEvidence(track, null, null, null, timestamp, hostSpeedMetresPerSecond, track.association, "searching");
       updates.push({ track, detection: null, iouWithPrevious: null });
     }
   });
@@ -574,7 +626,8 @@ function updateTracks(tracks: TrackedVehicle[], detections: VehicleDetection[], 
           const motionGate = Math.min(0.42, Math.max(0.13, targetDiagonal * 1.65 + track.misses * 0.035));
           const proximity = Math.max(0, 1 - centerDistance / motionGate);
           const classCompatibility = track.label === detection.label ? 1 : 0.72;
-          const associationScore = (iou * 0.46 + proximity * 0.42 + track.trackConfidence * 0.12) * classCompatibility;
+          const appearance = appearanceSimilarity(track.appearanceSignature, detection.appearanceSignature ?? null);
+          const associationScore = (iou * 0.36 + proximity * 0.34 + appearance * 0.2 + track.trackConfidence * 0.1) * classCompatibility;
           return { track, iou, associationScore, centerDistance, motionGate };
         })
         .filter((candidate) => candidate.iou >= TRACK_IOU_THRESHOLD || (candidate.centerDistance <= candidate.motionGate && candidate.associationScore >= 0.3))
@@ -655,7 +708,8 @@ function updateLeadLock(tracks: TrackedVehicle[], lock: LeadLockState, timestamp
   const current = lock.trackId ? tracks.find((track) => track.id === lock.trackId) ?? null : null;
 
   if (!best) {
-    if (current && timestamp - current.lastDetectedAt <= WEAK_LOCK_MS) {
+    const currentMeasurementAt = current ? Math.max(current.lastDetectedAt, current.lastVisualAt ?? 0) : 0;
+    if (current && timestamp - currentMeasurementAt <= WEAK_LOCK_MS) {
       lock.displayState = "weak_lock";
       return current;
     }
@@ -676,7 +730,8 @@ function updateLeadLock(tracks: TrackedVehicle[], lock: LeadLockState, timestamp
     return best;
   }
 
-  const currentMissingMs = timestamp - current.lastDetectedAt;
+  const currentMeasurementAt = Math.max(current.lastDetectedAt, current.lastVisualAt ?? 0);
+  const currentMissingMs = timestamp - currentMeasurementAt;
   if (currentMissingMs > WEAK_LOCK_MS) {
     lock.trackId = null;
     lock.lockedAt = null;
@@ -727,8 +782,8 @@ function buildEvidence(
   const previousCenterY = previous ? previous.y + previous.height / 2 : null;
   const centerDeltaX = previousCenterX !== null && seconds ? (centerX - previousCenterX) / seconds : null;
   const centerDeltaY = previousCenterY !== null && seconds ? (centerY - previousCenterY) / seconds : null;
-  const { estimatedDistanceMetres, estimatedCarLengthsAhead } = estimateDistance(track.label, track.width);
-  const previousDistanceMetres = previous ? estimateDistance(previous.label, previous.width).estimatedDistanceMetres : null;
+  const { estimatedDistanceMetres, estimatedCarLengthsAhead } = estimateDistance(track.label, track.width, track.horizontalFovDegrees);
+  const previousDistanceMetres = previous ? estimateDistance(previous.label, previous.width, previous.horizontalFovDegrees).estimatedDistanceMetres : null;
   const rawRelativeSpeedEstimateKmh =
     estimatedDistanceMetres !== null && previousDistanceMetres !== null && seconds
       ? clamp(((previousDistanceMetres - estimatedDistanceMetres) / seconds) * 3.6, -150, 150)
@@ -775,12 +830,15 @@ function buildEvidence(
     closingRisk,
     closingRiskScore,
     motionBasis,
+    depthSource: "calibrated_monocular_scale",
     tracking: {
       displayState,
       trackConfidence: track.trackConfidence,
       lockDurationMs: 0,
       trackAgeFrames: track.ageFrames,
       trackStability: track.stability,
+      filterUncertainty: track.filterUncertainty,
+      appearanceSimilarity: track.lastAppearanceSimilarity,
       leadScore: track.leadScore,
       predicted: track.predicted,
       lostForMs: Math.max(0, timestamp - track.lastDetectedAt),
@@ -789,7 +847,7 @@ function buildEvidence(
   };
 }
 
-function createTrack(detection: VehicleDetection, timestamp: number, nextTrackIdRef: { current: number }): TrackedVehicle {
+function createTrack(detection: VehicleDetection, timestamp: number, nextTrackIdRef: { current: number }, horizontalFovDegrees: number): TrackedVehicle {
   const track: TrackedVehicle = {
     id: `veh-${nextTrackIdRef.current}`,
     label: detection.label,
@@ -797,6 +855,8 @@ function createTrack(detection: VehicleDetection, timestamp: number, nextTrackId
     detectionConfidence: detection.confidence,
     trackConfidence: clamp(detection.confidence * 0.72, 0, 1),
     stability: 0.15,
+    filterUncertainty: 0.28,
+    lastAppearanceSimilarity: 0.5,
     leadScore: 0,
     x: detection.x,
     y: detection.y,
@@ -812,8 +872,11 @@ function createTrack(detection: VehicleDetection, timestamp: number, nextTrackId
     createdAt: timestamp,
     lastSeenAt: timestamp,
     lastDetectedAt: timestamp,
+    lastVisualAt: null,
     previousSeenAt: null,
     relativeSpeedEstimateKmh: null,
+    appearanceSignature: detection.appearanceSignature ?? null,
+    horizontalFovDegrees,
     lastEvidence: null,
     predicted: false,
     association: "high_confidence"
@@ -822,13 +885,14 @@ function createTrack(detection: VehicleDetection, timestamp: number, nextTrackId
   return track;
 }
 
-function predictTrack(track: TrackedVehicle, timestamp: number): void {
+function predictTrack(track: TrackedVehicle, timestamp: number, cameraShift = { x: 0, y: 0 }): void {
   const seconds = Math.min(0.5, Math.max(0, (timestamp - track.lastSeenAt) / 1000));
   if (seconds <= 0) return;
-  track.x = clamp(track.x + track.vx * seconds, 0, 1 - track.width);
-  track.y = clamp(track.y + track.vy * seconds, 0, 1 - track.height);
+  track.x = clamp(track.x + track.vx * seconds + cameraShift.x, 0, 1 - track.width);
+  track.y = clamp(track.y + track.vy * seconds + cameraShift.y, 0, 1 - track.height);
   track.width = clamp(track.width + track.vw * seconds, 0.01, 1);
   track.height = clamp(track.height + track.vh * seconds, 0.01, 1);
+  track.filterUncertainty = clamp(track.filterUncertainty + seconds * (0.055 + track.misses * 0.012), 0.02, 1);
   track.lastSeenAt = timestamp;
 }
 
@@ -842,7 +906,8 @@ function updateMatchedTrack(
 ): void {
   const previous = { ...track };
   const seconds = Math.max(0.08, (timestamp - track.lastDetectedAt) / 1000);
-  const alpha = association === "high_confidence" ? 0.44 : 0.28;
+  const measurementNoise = clamp(0.34 - detection.confidence * 0.24, 0.08, 0.26);
+  const alpha = clamp(track.filterUncertainty / (track.filterUncertainty + measurementNoise), association === "high_confidence" ? 0.34 : 0.22, 0.74);
   const nextX = lerp(track.x, detection.x, alpha);
   const nextY = lerp(track.y, detection.y, alpha);
   const nextWidth = lerp(track.width, detection.width, alpha);
@@ -860,6 +925,8 @@ function updateMatchedTrack(
   track.detectionConfidence = detection.confidence;
   track.trackConfidence = clamp(track.trackConfidence * 0.82 + detection.confidence * 0.18 + Math.min(0.1, iou * 0.08), 0, 1);
   track.stability = clamp(track.stability * 0.8 + iou * 0.2 + (association === "high_confidence" ? 0.04 : 0), 0, 1);
+  track.filterUncertainty = clamp((1 - alpha) * track.filterUncertainty + 0.012, 0.02, 1);
+  track.lastAppearanceSimilarity = appearanceSimilarity(track.appearanceSignature, detection.appearanceSignature ?? null);
   track.misses = 0;
   track.hits += 1;
   track.ageFrames += 1;
@@ -868,6 +935,9 @@ function updateMatchedTrack(
   track.lastDetectedAt = timestamp;
   track.predicted = false;
   track.association = association;
+  if (detection.appearanceSignature) {
+    track.appearanceSignature = blendSignatures(track.appearanceSignature, detection.appearanceSignature, 0.18);
+  }
   track.lastEvidence = buildEvidence(track, detection, previous, iou, timestamp, hostSpeedMetresPerSecond, association, "searching");
   track.relativeSpeedEstimateKmh = track.lastEvidence.relativeSpeedEstimateKmh;
 }
@@ -901,12 +971,16 @@ function centerDistanceBetween(a: Pick<TrackedVehicle | VehicleDetection, "x" | 
 
 function inDetectionConcernArea(detection: VehicleDetection): boolean {
   const center = detection.x + detection.width / 2;
-  return center > 0.16 && center < 0.88;
+  const bottom = detection.y + detection.height;
+  const corridorHalfWidth = 0.22 + clamp((bottom - 0.3) / 0.7, 0, 1) * 0.34;
+  return center > 0.5 - corridorHalfWidth && center < Math.min(0.9, 0.5 + corridorHalfWidth);
 }
 
 function inTrackConcernArea(track: TrackedVehicle): boolean {
   const center = track.x + track.width / 2;
-  return center > 0.14 && center < 0.9;
+  const bottom = track.y + track.height;
+  const corridorHalfWidth = 0.24 + clamp((bottom - 0.3) / 0.7, 0, 1) * 0.36;
+  return center > 0.5 - corridorHalfWidth && center < Math.min(0.92, 0.5 + corridorHalfWidth);
 }
 
 function isPlausibleRoadVehicle(target: Pick<TrackedVehicle | VehicleDetection, "label" | "x" | "y" | "width" | "height">): boolean {
@@ -929,10 +1003,222 @@ function smoothVelocity(previous: number, next: number): number {
   return clamp(previous * 0.68 + next * 0.32, -1.5, 1.5);
 }
 
-function estimateDistance(label: TrackedVehicle["label"], boxWidthRatio: number): Pick<VehicleTrackEvidence, "estimatedDistanceMetres" | "estimatedCarLengthsAhead"> {
+function estimateCameraShift(
+  current: HudOverlayMetrics,
+  previous: Pick<HudOverlayMetrics, "orientationAlpha" | "orientationBeta" | "orientationGamma"> | null
+): { x: number; y: number } {
+  if (!previous) return { x: 0, y: 0 };
+  const yawDelta = angleDelta(current.orientationAlpha, previous.orientationAlpha);
+  const pitchDelta =
+    current.orientationBeta !== null && previous.orientationBeta !== null ? current.orientationBeta - previous.orientationBeta : 0;
+  return {
+    x: clamp(-yawDelta / 60, -0.08, 0.08),
+    y: clamp(pitchDelta / 45, -0.08, 0.08)
+  };
+}
+
+function angleDelta(current: number | null, previous: number | null): number {
+  if (current === null || previous === null) return 0;
+  let delta = current - previous;
+  if (delta > 180) delta -= 360;
+  if (delta < -180) delta += 360;
+  return delta;
+}
+
+function attachAppearanceSignatures(
+  video: HTMLVideoElement,
+  detections: VehicleDetection[],
+  canvasRef: { current: HTMLCanvasElement | null }
+): void {
+  const canvas = canvasRef.current ?? document.createElement("canvas");
+  canvasRef.current = canvas;
+  canvas.width = 24;
+  canvas.height = 24;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx || !video.videoWidth || !video.videoHeight) return;
+
+  detections.forEach((detection) => {
+    const insetX = detection.width * 0.12;
+    const insetY = detection.height * 0.1;
+    const sourceX = (detection.x + insetX) * video.videoWidth;
+    const sourceY = (detection.y + insetY) * video.videoHeight;
+    const sourceWidth = Math.max(1, (detection.width - insetX * 2) * video.videoWidth);
+    const sourceHeight = Math.max(1, (detection.height - insetY * 2) * video.videoHeight);
+    ctx.drawImage(video, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, canvas.width, canvas.height);
+    const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    const signature = new Array<number>(12).fill(0);
+    for (let index = 0; index < pixels.length; index += 16) {
+      signature[Math.min(3, pixels[index] >> 6)] += 1;
+      signature[4 + Math.min(3, pixels[index + 1] >> 6)] += 1;
+      signature[8 + Math.min(3, pixels[index + 2] >> 6)] += 1;
+    }
+    const total = signature.reduce((sum, value) => sum + value, 0) || 1;
+    detection.appearanceSignature = signature.map((value) => value / total);
+  });
+}
+
+function appearanceSimilarity(left: number[] | null, right: number[] | null): number {
+  if (!left || !right || left.length !== right.length) return 0.5;
+  let dot = 0;
+  let leftMagnitude = 0;
+  let rightMagnitude = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    dot += left[index] * right[index];
+    leftMagnitude += left[index] * left[index];
+    rightMagnitude += right[index] * right[index];
+  }
+  return dot / Math.max(0.0001, Math.sqrt(leftMagnitude * rightMagnitude));
+}
+
+function blendSignatures(previous: number[] | null, next: number[], alpha: number): number[] {
+  if (!previous || previous.length !== next.length) return [...next];
+  return next.map((value, index) => lerp(previous[index], value, alpha));
+}
+
+function updateVisualLeadTrack(
+  video: HTMLVideoElement,
+  tracks: TrackedVehicle[],
+  lock: LeadLockState,
+  stateRef: { current: VisualTrackerState | null },
+  targetsRef: { current: HudTarget[] },
+  setTargets: (targets: HudTarget[]) => void
+): void {
+  const now = performance.now();
+  const lead = lock.trackId ? tracks.find((track) => track.id === lock.trackId) ?? null : null;
+  if (!lead || !video.videoWidth || !video.videoHeight) {
+    if (stateRef.current) {
+      stateRef.current.previousTrackId = null;
+      stateRef.current.previousBox = null;
+    }
+    return;
+  }
+
+  const state = stateRef.current ?? createVisualTrackerState();
+  stateRef.current = state;
+  if (now - state.lastRunAt < VISUAL_TRACK_INTERVAL_MS) return;
+  const elapsedSeconds = state.lastRunAt ? Math.max(0.04, (now - state.lastRunAt) / 1000) : 0.066;
+  state.lastRunAt = now;
+
+  state.ctx.drawImage(video, 0, 0, state.canvas.width, state.canvas.height);
+  const rgba = state.ctx.getImageData(0, 0, state.canvas.width, state.canvas.height).data;
+  const frame = new Uint8Array(state.canvas.width * state.canvas.height);
+  for (let pixel = 0; pixel < frame.length; pixel += 1) {
+    const offset = pixel * 4;
+    frame[pixel] = Math.round(rgba[offset] * 0.299 + rgba[offset + 1] * 0.587 + rgba[offset + 2] * 0.114);
+  }
+
+  if (state.previousFrame && state.previousTrackId === lead.id && state.previousBox) {
+    const match = correlateTargetPatch(state.previousFrame, frame, state.previousBox, lead, state.canvas.width, state.canvas.height);
+    if (match && match.confidence >= 0.64) {
+      const previousX = lead.x;
+      const previousY = lead.y;
+      lead.x = clamp(lerp(lead.x, match.x, 0.68), 0, 1 - lead.width);
+      lead.y = clamp(lerp(lead.y, match.y, 0.68), 0, 1 - lead.height);
+      lead.width = clamp(lerp(lead.width, match.width, 0.16), 0.01, 1);
+      lead.height = clamp(lerp(lead.height, match.height, 0.16), 0.01, 1);
+      lead.vx = smoothVelocity(lead.vx, (lead.x - previousX) / elapsedSeconds);
+      lead.vy = smoothVelocity(lead.vy, (lead.y - previousY) / elapsedSeconds);
+      lead.lastSeenAt = Date.now();
+      lead.lastVisualAt = lead.lastSeenAt;
+      lead.predicted = false;
+      lead.association = "visual_correlation";
+      lead.trackConfidence = clamp(lead.trackConfidence * 0.98 + match.confidence * 0.02, 0, 1);
+
+      const currentTarget = targetsRef.current[0];
+      if (currentTarget?.id === lead.id) {
+        const updatedTarget = { ...currentTarget, x: lead.x, y: lead.y, width: lead.width, height: lead.height, predicted: false };
+        targetsRef.current = [updatedTarget];
+        if (now - state.lastUiAt >= 90) {
+          state.lastUiAt = now;
+          setTargets([updatedTarget]);
+        }
+      }
+    }
+  }
+
+  state.previousFrame = frame;
+  state.previousTrackId = lead.id;
+  state.previousBox = { x: lead.x, y: lead.y, width: lead.width, height: lead.height };
+}
+
+function createVisualTrackerState(): VisualTrackerState {
+  const canvas = document.createElement("canvas");
+  canvas.width = 160;
+  canvas.height = 90;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) throw new Error("Visual tracking canvas is unavailable.");
+  return { canvas, ctx, previousFrame: null, previousTrackId: null, previousBox: null, lastRunAt: 0, lastUiAt: 0 };
+}
+
+function correlateTargetPatch(
+  previous: Uint8Array,
+  current: Uint8Array,
+  previousBox: Pick<TrackedVehicle, "x" | "y" | "width" | "height">,
+  predictedBox: Pick<TrackedVehicle, "x" | "y" | "width" | "height">,
+  frameWidth: number,
+  frameHeight: number
+): { x: number; y: number; width: number; height: number; confidence: number } | null {
+  const previousCenterX = (previousBox.x + previousBox.width / 2) * frameWidth;
+  const previousCenterY = (previousBox.y + previousBox.height / 2) * frameHeight;
+  const predictedCenterX = (predictedBox.x + predictedBox.width / 2) * frameWidth;
+  const predictedCenterY = (predictedBox.y + predictedBox.height / 2) * frameHeight;
+  const patchWidth = clamp(Math.round(previousBox.width * frameWidth * 0.72), 6, 56);
+  const patchHeight = clamp(Math.round(previousBox.height * frameHeight * 0.72), 5, 42);
+  if (patchWidth < 6 || patchHeight < 5) return null;
+
+  let bestScore = Number.POSITIVE_INFINITY;
+  let bestX = predictedCenterX;
+  let bestY = predictedCenterY;
+  let bestScale = 1;
+  const searchX = Math.max(8, Math.round(patchWidth * 0.55));
+  const searchY = Math.max(6, Math.round(patchHeight * 0.55));
+
+  for (const scale of [0.96, 1, 1.04]) {
+    for (let dy = -searchY; dy <= searchY; dy += 3) {
+      for (let dx = -searchX; dx <= searchX; dx += 3) {
+        const candidateX = predictedCenterX + dx;
+        const candidateY = predictedCenterY + dy;
+        let difference = 0;
+        let samples = 0;
+        for (let py = -patchHeight / 2; py < patchHeight / 2; py += 2) {
+          for (let px = -patchWidth / 2; px < patchWidth / 2; px += 2) {
+            const previousX = Math.round(previousCenterX + px);
+            const previousY = Math.round(previousCenterY + py);
+            const currentX = Math.round(candidateX + px * scale);
+            const currentY = Math.round(candidateY + py * scale);
+            if (previousX < 0 || previousX >= frameWidth || previousY < 0 || previousY >= frameHeight) continue;
+            if (currentX < 0 || currentX >= frameWidth || currentY < 0 || currentY >= frameHeight) continue;
+            difference += Math.abs(previous[previousY * frameWidth + previousX] - current[currentY * frameWidth + currentX]);
+            samples += 1;
+          }
+        }
+        if (!samples) continue;
+        const score = difference / samples;
+        if (score < bestScore) {
+          bestScore = score;
+          bestX = candidateX;
+          bestY = candidateY;
+          bestScale = scale;
+        }
+      }
+    }
+  }
+
+  if (!Number.isFinite(bestScore)) return null;
+  const width = clamp(predictedBox.width * bestScale, 0.01, 1);
+  const height = clamp(predictedBox.height * bestScale, 0.01, 1);
+  return {
+    x: clamp(bestX / frameWidth - width / 2, 0, 1 - width),
+    y: clamp(bestY / frameHeight - height / 2, 0, 1 - height),
+    width,
+    height,
+    confidence: clamp(1 - bestScore / 96, 0, 1)
+  };
+}
+
+function estimateDistance(label: TrackedVehicle["label"], boxWidthRatio: number, horizontalFovDegrees: number): Pick<VehicleTrackEvidence, "estimatedDistanceMetres" | "estimatedCarLengthsAhead"> {
   const assumedWidthMetres = label === "motorcycle" ? 0.85 : label === "bus" || label === "truck" ? 2.45 : 1.85;
   const assumedLengthMetres = label === "motorcycle" ? 2.2 : label === "bus" || label === "truck" ? 8.5 : 4.5;
-  const horizontalFovDegrees = 60;
   const focalLengthRatio = 1 / (2 * Math.tan((horizontalFovDegrees * Math.PI) / 360));
   const estimatedDistanceMetres = boxWidthRatio > 0.01 ? (assumedWidthMetres * focalLengthRatio) / boxWidthRatio : null;
   return {
@@ -1029,6 +1315,12 @@ function getHudConfidenceThreshold(options: { auto: boolean; sensitivity: number
     return clamp(0.84 - options.sensitivity * 0.0042, 0.42, 0.84);
   }
   return 0.52;
+}
+
+function cameraLensFov(cameraLens: CameraLens): number {
+  if (cameraLens === "0.5x") return 110;
+  if (cameraLens === "3x") return 28;
+  return 70;
 }
 
 function prunePlateMemory(memory: Record<string, PlateMemory>): void {

@@ -16,6 +16,9 @@ export interface HudOverlayMetrics {
   latitude: number | null;
   longitude: number | null;
   weather: WeatherInfo | null;
+  orientationAlpha: number | null;
+  orientationBeta: number | null;
+  orientationGamma: number | null;
 }
 
 export type VehicleRelativeMotion = "approaching" | "moving_away" | "crossing" | "stable" | "unknown";
@@ -51,16 +54,19 @@ export interface VehicleTrackEvidence {
   closingRisk: VehicleClosingRisk;
   closingRiskScore: number;
   motionBasis: string[];
+  depthSource: "calibrated_monocular_scale";
   tracking: {
     displayState: VehicleLockDisplayState;
     trackConfidence: number;
     lockDurationMs: number;
     trackAgeFrames: number;
     trackStability: number;
+    filterUncertainty: number;
+    appearanceSimilarity: number;
     leadScore: number;
     predicted: boolean;
     lostForMs: number;
-    association: "high_confidence" | "low_confidence" | "prediction";
+    association: "high_confidence" | "low_confidence" | "visual_correlation" | "prediction";
   };
 }
 

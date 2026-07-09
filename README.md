@@ -48,6 +48,16 @@ The browser uploads protected incident video/sensor objects directly to Google C
 
 The GCS bucket must allow browser CORS for signed uploads from the deployed app origin, including `PUT`, `GET`, and `Content-Type`.
 
+### Vehicle tracking model
+
+The default detector is `public/models/yolov8n.onnx`. To deploy a dashcam-fine-tuned YOLO nano model without changing code, set:
+
+```bash
+NEXT_PUBLIC_DASHCAM_YOLO_MODEL_URL=/models/your-dashcam-model.onnx
+```
+
+The output must use COCO class IDs for car, motorcycle, bus, and truck. Tracking combines periodic ONNX detections with frame-rate visual correlation, appearance matching, gyro compensation, adaptive Kalman-style filtering, and lock reacquisition.
+
 ## Browser limitations
 
 - Camera recording depends on `navigator.mediaDevices.getUserMedia`.
@@ -57,6 +67,7 @@ The GCS bucket must allow browser CORS for signed uploads from the deployed app 
 - Browser GPS speed can be missing or noisy depending on device, OS, signal, and privacy settings.
 - IndexedDB data is local to the browser profile and can be removed by the OS/browser.
 - Emergency cloud upload requires the configured GCS/SMS environment variables and network connectivity at the time of incident upload.
+- Mobile browsers do not expose iPhone LiDAR depth frames to ordinary camera pages. Distance and target-speed values therefore use lens-calibrated monocular scale and must remain labelled as estimates.
 
 ## iPhone permission notes
 
