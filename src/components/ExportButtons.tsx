@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { buildTextSummary, exportSessionCsv, exportSessionJson, getVideoBlob } from "@/lib/storage";
 import { downloadBlob } from "@/lib/drive-utils";
+import { burnHudTelemetryIntoVideo } from "@/lib/hud-video-export";
 import type { DriveSession } from "@/types/drive";
 
 export function ExportButtons({ session }: { session: DriveSession }) {
@@ -10,6 +11,8 @@ export function ExportButtons({ session }: { session: DriveSession }) {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [videoType, setVideoType] = useState("");
   const [markerClips, setMarkerClips] = useState<Array<{ id: string; url: string; type: string; timestamp: number }>>([]);
+  const [hudExportProgress, setHudExportProgress] = useState<number | null>(null);
+  const [hudExportError, setHudExportError] = useState<string | null>(null);
 
   useEffect(() => {
     let currentUrl: string | null = null;
@@ -53,6 +56,25 @@ export function ExportButtons({ session }: { session: DriveSession }) {
 
   const videoExtension = videoType.includes("mp4") ? "mp4" : "webm";
 
+  async function exportHudVideo() {
+    if (!videoUrl || hudExportProgress !== null) return;
+    setHudExportError(null);
+    setHudExportProgress(0);
+    try {
+      const blob = await burnHudTelemetryIntoVideo({
+        videoUrl,
+        session,
+        onProgress: setHudExportProgress
+      });
+      const extension = blob.type.includes("mp4") ? "mp4" : "webm";
+      downloadBlob(blob, `${base}-hud-video.${extension}`);
+    } catch (error) {
+      setHudExportError(error instanceof Error ? error.message : "Could not generate HUD video.");
+    } finally {
+      setHudExportProgress(null);
+    }
+  }
+
   return (
     <section className="rounded-lg border border-cockpit-line bg-cockpit-900 p-4">
       <h2 className="font-black">Export Evidence</h2>
@@ -70,15 +92,32 @@ export function ExportButtons({ session }: { session: DriveSession }) {
           Summary
         </button>
         {videoUrl ? (
-          <a className="touch-target col-span-2 rounded-md bg-signal-blue px-3 py-2 text-center font-bold text-cockpit-950" href={videoUrl} download={`${base}-video.${videoExtension}`} target="_blank">
-            Save / Open Video
-          </a>
+          <>
+            <a className="touch-target col-span-2 rounded-md bg-cockpit-800 px-3 py-2 text-center font-bold" href={videoUrl} download={`${base}-raw-video.${videoExtension}`} target="_blank">
+              Save Raw Video
+            </a>
+            <button className="touch-target col-span-2 rounded-md bg-signal-blue px-3 py-2 text-center font-black text-cockpit-950 disabled:opacity-60" disabled={hudExportProgress !== null} onClick={() => void exportHudVideo()}>
+              {hudExportProgress !== null ? `Generating HUD Video ${Math.round(hudExportProgress * 100)}%` : "Generate HUD Video"}
+            </button>
+          </>
         ) : (
           <button className="touch-target col-span-2 rounded-md bg-cockpit-800 px-3 py-2 text-slate-500" disabled>
             No Video Saved
           </button>
         )}
       </div>
+      {hudExportError ? <p className="mt-3 rounded-md border border-signal-amber/40 bg-signal-amber/10 p-3 text-sm text-signal-amber">{hudExportError}</p> : null}
+      {hudExportProgress !== null ? (
+        <div className="mt-3 rounded-md border border-cockpit-line bg-cockpit-950 p-3">
+          <div className="mb-2 flex justify-between text-xs font-bold uppercase tracking-wide text-slate-500">
+            <span>Burning HUD telemetry</span>
+            <span>{Math.round(hudExportProgress * 100)}%</span>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-cockpit-800">
+            <div className="h-full bg-signal-green transition-all" style={{ width: `${Math.round(hudExportProgress * 100)}%` }} />
+          </div>
+        </div>
+      ) : null}
       {markerClips.length ? (
         <div className="mt-4 space-y-2">
           <div className="text-xs font-bold uppercase tracking-wide text-slate-500">Marked Event Clips</div>

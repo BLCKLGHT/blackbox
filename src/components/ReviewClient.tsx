@@ -158,8 +158,8 @@ export function ReviewClient() {
               <button className="rounded-md border border-signal-blue px-3 py-2 text-sm font-black text-signal-blue" onClick={() => setReplayMode((current) => !current)}>
                 {replayMode ? "Normal Video" : "Replay Mode"}
               </button>
-              <a className="rounded-md bg-signal-blue px-3 py-2 text-sm font-black text-cockpit-950" href={videoUrl} download={`black-box-${session.id}-video.${videoExtension}`} target="_blank">
-                Save Video
+              <a className="rounded-md bg-signal-blue px-3 py-2 text-sm font-black text-cockpit-950" href={videoUrl} download={`black-box-${session.id}-raw-video.${videoExtension}`} target="_blank">
+                Save Raw Video
               </a>
             </div>
           </div>

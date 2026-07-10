@@ -18,7 +18,6 @@ export default function DrivePage() {
   const [isStarting, setIsStarting] = useState(false);
   const [condensed, setCondensed] = useState(false);
   const [cameraLens, setCameraLens] = useState<CameraLens>("auto");
-  const [hudEnabled, setHudEnabled] = useState(false);
   const [liveAnalysisEnabled, setLiveAnalysisEnabled] = useState(false);
   const [plateOcrEnabled, setPlateOcrEnabled] = useState(false);
   const [hudSensitivityAuto, setHudSensitivityAuto] = useState(true);
@@ -29,7 +28,7 @@ export default function DrivePage() {
   async function beginRecording() {
     setIsStarting(true);
     setHasStarted(true);
-    await drive.start({ cameraLens, hudEnabled, liveAnalysisEnabled, plateOcrEnabled: liveAnalysisEnabled && plateOcrEnabled, hudSensitivityAuto, hudSensitivity });
+    await drive.start({ cameraLens, hudEnabled: false, liveAnalysisEnabled, plateOcrEnabled: liveAnalysisEnabled && plateOcrEnabled, hudSensitivityAuto, hudSensitivity });
     setIsStarting(false);
   }
 
@@ -65,13 +64,9 @@ export default function DrivePage() {
                 <p className="mt-2 text-xs leading-5 text-slate-500">iPhone browsers expose lenses differently. If exact lens switching is unavailable, Black Box uses the closest rear camera/zoom supported.</p>
               </div>
               <div className="space-y-2">
-                <label className="flex items-center justify-between gap-4 rounded-lg border border-cockpit-line bg-cockpit-950 p-3">
-                  <span>
-                    <span className="block font-bold">Video telemetry overlay</span>
-                    <span className="block text-xs leading-5 text-slate-500">Burns speed, time, GPS, road label, gyro, and the center reticle into the saved clip.</span>
-                  </span>
-                  <input type="checkbox" checked={hudEnabled} onChange={(event) => setHudEnabled(event.target.checked)} />
-                </label>
+                <p className="rounded-lg border border-cockpit-line bg-cockpit-950 p-3 text-xs leading-5 text-slate-500">
+                  Drive mode records raw video plus telemetry to keep the phone cooler. The HUD stays visible live, and Review can generate a burned-in HUD video later.
+                </p>
                 <label className="flex items-center justify-between gap-4 rounded-lg border border-cockpit-line bg-cockpit-950 p-3">
                   <span>
                     <span className="block font-bold">Real-time vehicle analysis</span>

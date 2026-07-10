@@ -431,6 +431,21 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
     [drawHud, startHudDetection]
   );
 
+  const startLiveAnalysis = useCallback(
+    async (mediaStream: MediaStream, options: Pick<VideoRecorderStartOptions, "liveAnalysisEnabled" | "plateOcrEnabled">) => {
+      if (!options.liveAnalysisEnabled) return;
+      const video = document.createElement("video");
+      video.muted = true;
+      video.playsInline = true;
+      video.srcObject = mediaStream;
+      compositeVideoRef.current = video;
+      drawingActiveRef.current = true;
+      await video.play();
+      await startHudDetection(video, options.plateOcrEnabled);
+    },
+    [startHudDetection]
+  );
+
   const start = useCallback(async (options: VideoRecorderStartOptions) => {
     if (!navigator.mediaDevices?.getUserMedia) {
       setError("Camera access is not supported in this browser.");
@@ -469,7 +484,8 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
         return true;
       }
 
-      const recordingStream = options.hudEnabled ? await startCompositeRecording(mediaStream, options) : mediaStream;
+      await startLiveAnalysis(mediaStream, options);
+      const recordingStream = mediaStream;
       const mimeType = getSupportedMimeType();
       const recorderOptions: MediaRecorderOptions = { videoBitsPerSecond: getVideoBitsPerSecond(quality) };
       if (mimeType) recorderOptions.mimeType = mimeType;
@@ -508,7 +524,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
       setError(err instanceof Error ? err.message : "Camera permission was denied.");
       return false;
     }
-  }, [applyCameraLens, audio, getSupportedMimeType, quality, startCompositeRecording]);
+  }, [applyCameraLens, audio, getSupportedMimeType, quality, startLiveAnalysis]);
 
   const stop = useCallback(async () => {
     drawingActiveRef.current = false;
