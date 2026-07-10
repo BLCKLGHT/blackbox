@@ -79,6 +79,11 @@ type VisualTrackerState = {
   lastUiAt: number;
 };
 
+type ForceGraphSample = {
+  timestamp: number;
+  acceleration: number;
+};
+
 const YOLO_MODEL_NAME = process.env.NEXT_PUBLIC_DASHCAM_YOLO_MODEL_URL ? "custom-dashcam-yolo-onnx" : "yolov8n-onnx";
 const DETECTION_INTERVAL_MS = 280;
 const LOCKED_DETECTION_INTERVAL_MS = 420;
@@ -90,6 +95,8 @@ const MAX_TRACK_MISSES = 12;
 const LEAD_SWITCH_MARGIN = 0.34;
 const LEAD_SWITCH_HOLD_MS = 1500;
 const WEAK_LOCK_MS = 750;
+const FORCE_GRAPH_WINDOW_MS = 9000;
+const MAX_GRAPH_ACCELERATION = 6;
 
 export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverlayMetrics: () => HudOverlayMetrics) {
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -133,6 +140,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
   const previousOrientationRef = useRef<Pick<HudOverlayMetrics, "orientationAlpha" | "orientationBeta" | "orientationGamma"> | null>(null);
   const visualTrackerRef = useRef<VisualTrackerState | null>(null);
   const horizontalFovDegreesRef = useRef(70);
+  const forceGraphSamplesRef = useRef<ForceGraphSample[]>([]);
 
   const getSupportedMimeType = useCallback(() => {
     if (typeof MediaRecorder === "undefined" || typeof MediaRecorder.isTypeSupported !== "function") return "";
@@ -169,24 +177,39 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
   const drawTelemetryOverlay = useCallback((ctx: CanvasRenderingContext2D, metrics: HudOverlayMetrics, targets: HudTarget[], width: number, height: number) => {
     const locked = targets.find((target) => target.lockState === "locked") ?? null;
     const speed = metrics.ownSpeedMetresPerSecond !== null ? `${(metrics.ownSpeedMetresPerSecond * 3.6).toFixed(0)} KMH` : "-- KMH";
+    const acceleration = metrics.longitudinalAccelerationMetresPerSecondSquared;
+    const accelerationLine = acceleration !== null ? `ACCEL ${Math.max(0, acceleration).toFixed(1)} M/S2 / ${formatForceG(metrics.accelerationForceG)}` : "ACCEL --";
+    const brakingLine = acceleration !== null ? `BRAKE ${Math.max(0, -acceleration).toFixed(1)} M/S2 / ${formatForceG(metrics.brakingForceG)}` : "BRAKE --";
+    const motionForce = metrics.motionForceMetresPerSecondSquared !== null ? `MOTION ${metrics.motionForceMetresPerSecondSquared.toFixed(1)} M/S2` : "MOTION --";
     const time = new Date(metrics.timestamp).toLocaleTimeString();
     const coords = metrics.latitude !== null && metrics.longitude !== null ? `${metrics.latitude.toFixed(5)}, ${metrics.longitude.toFixed(5)}` : "GPS --";
     const weather = metrics.weather ? `${metrics.weather.temperatureCelsius?.toFixed(0) ?? "--"}C ${metrics.weather.summary}` : "WX --";
     const gap = locked?.estimatedCarLengthsAhead !== null && locked?.estimatedCarLengthsAhead !== undefined ? `${locked.estimatedCarLengthsAhead.toFixed(1)} CAR LENGTHS` : "NO TARGET";
     const motion = locked ? `${lockStateLabel(locked.displayState)} / ${relativeMotionLabel(locked.relativeMotionEstimate)} / RISK ${locked.closingRisk.toUpperCase()}` : "NO VEHICLE";
     const confidence = locked ? `TRACK ${Math.round(locked.trackConfidence * 100)}% / LOCK ${(locked.lockDurationMs / 1000).toFixed(1)}S` : "TRACK --";
-    const lines = [speed, time, coords, weather, gap, motion, confidence];
+    const lines = [speed, accelerationLine, brakingLine, motionForce, time, coords, weather, gap, motion, confidence];
+    if (acceleration !== null) {
+      const samples = forceGraphSamplesRef.current;
+      if (!samples.length || metrics.timestamp - samples[samples.length - 1].timestamp > 160) {
+        samples.push({ timestamp: metrics.timestamp, acceleration });
+      } else {
+        samples[samples.length - 1] = { timestamp: metrics.timestamp, acceleration };
+      }
+      while (samples.length && metrics.timestamp - samples[0].timestamp > FORCE_GRAPH_WINDOW_MS) samples.shift();
+    }
 
     ctx.save();
     ctx.font = `${Math.max(18, width * 0.018)}px monospace`;
     ctx.textBaseline = "top";
     const lineHeight = Math.max(24, width * 0.024);
     const boxWidth = Math.max(...lines.map((line) => ctx.measureText(line).width)) + 24;
-    const boxHeight = lineHeight * lines.length + 16;
+    const graphHeight = Math.max(58, width * 0.052);
+    const boxHeight = lineHeight * lines.length + graphHeight + 28;
     ctx.fillStyle = "rgba(5, 6, 7, 0.68)";
     ctx.fillRect(14, 14, boxWidth, boxHeight);
     ctx.fillStyle = "#4ade80";
     lines.forEach((line, index) => ctx.fillText(line, 26, 22 + index * lineHeight));
+    drawForceGraph(ctx, forceGraphSamplesRef.current, 26, 28 + lineHeight * lines.length, boxWidth - 24, graphHeight, metrics.timestamp);
     ctx.restore();
   }, []);
 
@@ -417,6 +440,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
       tracksRef.current = [];
       previousOrientationRef.current = null;
       visualTrackerRef.current = null;
+      forceGraphSamplesRef.current = [];
       nextTrackIdRef.current = 1;
       leadLockRef.current = {
         trackId: null,
@@ -597,6 +621,10 @@ export async function analyzeRecordedVideo(input: {
     const metrics: HudOverlayMetrics = {
       timestamp,
       ownSpeedMetresPerSecond: gps?.speedMetresPerSecond ?? null,
+      longitudinalAccelerationMetresPerSecondSquared: estimateAccelerationAt(input.session.gpsSamples, timestamp),
+      accelerationForceG: null,
+      brakingForceG: null,
+      motionForceMetresPerSecondSquared: null,
       latitude: gps?.latitude ?? null,
       longitude: gps?.longitude ?? null,
       weather: null,
@@ -604,6 +632,10 @@ export async function analyzeRecordedVideo(input: {
       orientationBeta: orientation?.beta ?? null,
       orientationGamma: orientation?.gamma ?? null
     };
+    if (metrics.longitudinalAccelerationMetresPerSecondSquared !== null) {
+      metrics.accelerationForceG = metrics.longitudinalAccelerationMetresPerSecondSquared > 0 ? metrics.longitudinalAccelerationMetresPerSecondSquared / 9.80665 : null;
+      metrics.brakingForceG = metrics.longitudinalAccelerationMetresPerSecondSquared < 0 ? Math.abs(metrics.longitudinalAccelerationMetresPerSecondSquared) / 9.80665 : null;
+    }
     const detections = await detector.detect(video, threshold);
     attachAppearanceSignatures(video, detections, appearanceCanvasRef);
     const cameraShift = estimateCameraShift(metrics, previousOrientation);
@@ -685,6 +717,15 @@ function nearestByTimestamp<T extends GpsSample | OrientationSample>(samples: T[
     }
   }
   return bestDelta <= 2500 ? best : null;
+}
+
+function estimateAccelerationAt(samples: GpsSample[], timestamp: number): number | null {
+  const before = samples.filter((sample) => sample.speedMetresPerSecond !== null && sample.timestamp <= timestamp).slice(-1)[0];
+  const after = samples.find((sample) => sample.speedMetresPerSecond !== null && sample.timestamp > timestamp);
+  if (!before || !after) return null;
+  const seconds = (after.timestamp - before.timestamp) / 1000;
+  if (seconds < 0.35 || seconds > 4) return null;
+  return ((after.speedMetresPerSecond ?? 0) - (before.speedMetresPerSecond ?? 0)) / seconds;
 }
 
 function updateTracks(
@@ -1431,6 +1472,59 @@ function lockStateLabel(state: VehicleLockDisplayState): string {
   if (state === "lost_target") return "LOST TARGET";
   if (state === "no_vehicle") return "NO VEHICLE";
   return "SEARCHING";
+}
+
+function formatForceG(forceG: number | null): string {
+  return forceG !== null && Number.isFinite(forceG) ? `${forceG.toFixed(2)}G` : "--G";
+}
+
+function drawForceGraph(
+  ctx: CanvasRenderingContext2D,
+  samples: ForceGraphSample[],
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  now: number
+): void {
+  ctx.save();
+  ctx.globalAlpha = 0.86;
+  ctx.fillStyle = "rgba(10, 15, 20, 0.34)";
+  ctx.fillRect(x, y, width, height);
+  ctx.strokeStyle = "rgba(148, 163, 184, 0.32)";
+  ctx.lineWidth = 1;
+  const midY = y + height / 2;
+  ctx.beginPath();
+  ctx.moveTo(x, midY);
+  ctx.lineTo(x + width, midY);
+  ctx.stroke();
+
+  ctx.font = `${Math.max(12, width * 0.028)}px monospace`;
+  ctx.fillStyle = "rgba(226, 232, 240, 0.76)";
+  ctx.fillText("ACCEL", x + 4, y + 4);
+  ctx.fillText("DECEL", x + 4, midY + 5);
+
+  if (samples.length >= 2) {
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "#4ade80";
+    ctx.beginPath();
+    samples.forEach((sample, index) => {
+      const ageRatio = clamp((now - sample.timestamp) / FORCE_GRAPH_WINDOW_MS, 0, 1);
+      const pointX = x + width * (1 - ageRatio);
+      const pointY = midY - clamp(sample.acceleration / MAX_GRAPH_ACCELERATION, -1, 1) * (height / 2 - 7);
+      if (index === 0) ctx.moveTo(pointX, pointY);
+      else ctx.lineTo(pointX, pointY);
+    });
+    ctx.stroke();
+  }
+
+  const latest = samples[samples.length - 1]?.acceleration ?? 0;
+  const markerY = midY - clamp(latest / MAX_GRAPH_ACCELERATION, -1, 1) * (height / 2 - 7);
+  ctx.fillStyle = latest < -0.2 ? "#f59e0b" : "#4ade80";
+  ctx.beginPath();
+  ctx.arc(x + width - 7, markerY, 4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
 }
 
 function getHudConfidenceThreshold(options: { auto: boolean; sensitivity: number }): number {

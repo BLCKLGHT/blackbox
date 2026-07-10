@@ -49,6 +49,7 @@ export function RecordingCockpit({
         prominent
         compact={compact}
         hudTargets={hudTargets}
+        gpsSamples={gpsSamples}
         latestGps={latestGps}
         latestMotion={latestMotion}
         latestOrientation={latestOrientation}

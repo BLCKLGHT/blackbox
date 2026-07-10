@@ -30,17 +30,24 @@ export function useDriveSession() {
   const [weather, setWeather] = useState<WeatherInfo | null>(null);
   const lastWeatherFetchRef = useRef({ timestamp: 0, latitude: 0, longitude: 0 });
   const getOverlayMetrics = useCallback(
-    (): HudOverlayMetrics => ({
-      timestamp: Date.now(),
-      ownSpeedMetresPerSecond: geo.latestGpsRef.current?.speedMetresPerSecond ?? null,
-      latitude: geo.latestGpsRef.current?.latitude ?? null,
-      longitude: geo.latestGpsRef.current?.longitude ?? null,
-      weather,
-      orientationAlpha: motion.latestOrientationRef.current?.alpha ?? null,
-      orientationBeta: motion.latestOrientationRef.current?.beta ?? null,
-      orientationGamma: motion.latestOrientationRef.current?.gamma ?? null
-    }),
-    [geo.latestGpsRef, motion.latestOrientationRef, weather]
+    (): HudOverlayMetrics => {
+      const acceleration = calculateLongitudinalAcceleration(geo.samplesRef.current);
+      return {
+        timestamp: Date.now(),
+        ownSpeedMetresPerSecond: geo.latestGpsRef.current?.speedMetresPerSecond ?? null,
+        longitudinalAccelerationMetresPerSecondSquared: acceleration,
+        accelerationForceG: acceleration !== null && acceleration > 0 ? acceleration / 9.80665 : null,
+        brakingForceG: acceleration !== null && acceleration < 0 ? Math.abs(acceleration) / 9.80665 : null,
+        motionForceMetresPerSecondSquared: motion.latestMotionRef.current?.magnitude ?? null,
+        latitude: geo.latestGpsRef.current?.latitude ?? null,
+        longitude: geo.latestGpsRef.current?.longitude ?? null,
+        weather,
+        orientationAlpha: motion.latestOrientationRef.current?.alpha ?? null,
+        orientationBeta: motion.latestOrientationRef.current?.beta ?? null,
+        orientationGamma: motion.latestOrientationRef.current?.gamma ?? null
+      };
+    },
+    [geo.latestGpsRef, geo.samplesRef, motion.latestMotionRef, motion.latestOrientationRef, weather]
   );
   const video = useVideoRecorder(settings.videoQuality, settings.audioRecording, getOverlayMetrics);
   const [session, setSession] = useState<DriveSession>(() => createSession(settings.retentionHours));
@@ -290,4 +297,18 @@ function weatherCodeLabel(code: unknown): string {
   if ([71, 73, 75, 77, 85, 86].includes(code)) return "Snow";
   if ([95, 96, 99].includes(code)) return "Storm";
   return "Weather";
+}
+
+function calculateLongitudinalAcceleration(samples: { timestamp: number; speedMetresPerSecond: number | null }[]): number | null {
+  const valid = samples.filter((sample) => sample.speedMetresPerSecond !== null);
+  if (valid.length < 2) return null;
+  const latest = valid[valid.length - 1];
+  for (let index = valid.length - 2; index >= 0; index -= 1) {
+    const previous = valid[index];
+    const seconds = (latest.timestamp - previous.timestamp) / 1000;
+    if (seconds < 0.35) continue;
+    if (seconds > 4) break;
+    return ((latest.speedMetresPerSecond ?? 0) - (previous.speedMetresPerSecond ?? 0)) / seconds;
+  }
+  return null;
 }

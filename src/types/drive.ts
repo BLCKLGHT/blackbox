@@ -13,6 +13,10 @@ export interface WeatherInfo {
 export interface HudOverlayMetrics {
   timestamp: number;
   ownSpeedMetresPerSecond: number | null;
+  longitudinalAccelerationMetresPerSecondSquared: number | null;
+  accelerationForceG: number | null;
+  brakingForceG: number | null;
+  motionForceMetresPerSecondSquared: number | null;
   latitude: number | null;
   longitude: number | null;
   weather: WeatherInfo | null;

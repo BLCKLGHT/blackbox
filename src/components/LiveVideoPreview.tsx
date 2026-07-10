@@ -9,6 +9,7 @@ export function LiveVideoPreview({
   prominent = false,
   compact = false,
   hudTargets = [],
+  gpsSamples = [],
   latestGps = null,
   latestMotion = null,
   latestOrientation = null,
@@ -18,6 +19,7 @@ export function LiveVideoPreview({
   prominent?: boolean;
   compact?: boolean;
   hudTargets?: HudTarget[];
+  gpsSamples?: GpsSample[];
   latestGps?: GpsSample | null;
   latestMotion?: MotionSample | null;
   latestOrientation?: OrientationSample | null;
@@ -31,6 +33,8 @@ export function LiveVideoPreview({
   const roll = latestOrientation?.gamma ?? 0;
   const heading = latestOrientation?.alpha ?? latestGps?.heading ?? 0;
   const motionForce = latestMotion?.magnitude ?? 0;
+  const acceleration = useMemo(() => calculateAcceleration(gpsSamples), [gpsSamples]);
+  const graphSamples = useMemo(() => buildAccelerationGraph(gpsSamples), [gpsSamples]);
 
   useEffect(() => {
     if (ref.current) ref.current.srcObject = stream;
@@ -134,6 +138,9 @@ export function LiveVideoPreview({
         }`}
       >
         <div>{metresPerSecondToKmh(latestGps?.speedMetresPerSecond).toFixed(0)} KMH</div>
+        <div>ACCEL {acceleration !== null ? Math.max(0, acceleration).toFixed(1) : "--"} M/S2</div>
+        <div>BRAKE {acceleration !== null ? Math.max(0, -acceleration).toFixed(1) : "--"} M/S2</div>
+        <AccelerationMiniGraph samples={graphSamples} latest={acceleration} />
         <div>GYRO P/R {pitch.toFixed(0)} / {roll.toFixed(0)}</div>
         <div>HDG {heading.toFixed(0).padStart(3, "0")} / FORCE {motionForce.toFixed(1)}</div>
         <div>{new Date().toLocaleTimeString()}</div>
@@ -145,6 +152,50 @@ export function LiveVideoPreview({
       </div>
     </div>
   );
+}
+
+function AccelerationMiniGraph({ samples, latest }: { samples: number[]; latest: number | null }) {
+  const width = 112;
+  const height = 34;
+  const midY = height / 2;
+  const maxAcceleration = 6;
+  const points = samples
+    .map((sample, index) => {
+      const x = samples.length > 1 ? (index / (samples.length - 1)) * width : width;
+      const y = midY - clamp(sample / maxAcceleration, -1, 1) * (height / 2 - 4);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  const markerY = midY - clamp((latest ?? 0) / maxAcceleration, -1, 1) * (height / 2 - 4);
+  return (
+    <svg className="my-1 block h-[34px] w-28 overflow-visible" viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
+      <rect width={width} height={height} fill="rgba(10,15,20,0.35)" />
+      <line x1="0" y1={midY} x2={width} y2={midY} stroke="rgba(148,163,184,0.35)" strokeWidth="1" />
+      {points ? <polyline points={points} fill="none" stroke="#4ade80" strokeWidth="2" /> : null}
+      <circle cx={width - 4} cy={markerY} r="3" fill={(latest ?? 0) < -0.2 ? "#f59e0b" : "#4ade80"} />
+    </svg>
+  );
+}
+
+function buildAccelerationGraph(samples: GpsSample[]): number[] {
+  const accelerations: number[] = [];
+  const valid = samples.filter((sample) => sample.speedMetresPerSecond !== null).slice(-14);
+  for (let index = 1; index < valid.length; index += 1) {
+    const previous = valid[index - 1];
+    const current = valid[index];
+    const seconds = (current.timestamp - previous.timestamp) / 1000;
+    if (seconds >= 0.35 && seconds <= 4) accelerations.push(((current.speedMetresPerSecond ?? 0) - (previous.speedMetresPerSecond ?? 0)) / seconds);
+  }
+  return accelerations;
+}
+
+function calculateAcceleration(samples: GpsSample[]): number | null {
+  const graph = buildAccelerationGraph(samples);
+  return graph.length ? graph[graph.length - 1] : null;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }
 
 function motionLabel(motion: HudTarget["relativeMotionEstimate"] | undefined): string {
