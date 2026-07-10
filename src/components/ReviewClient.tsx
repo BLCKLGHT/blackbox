@@ -3,8 +3,9 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { EVIDENCE_WARNING, downloadBlob } from "@/lib/drive-utils";
-import { deleteLastSession, getLastSession, getVideoBlob, protectSession } from "@/lib/storage";
+import { deleteLastSession, getLastSession, getVideoBlob, protectSession, saveSession } from "@/lib/storage";
 import { loadSettings } from "@/lib/settings";
+import { analyzeRecordedVideo } from "@/hooks/useVideoRecorder";
 import type { DriveSession } from "@/types/drive";
 import { MotionChart, SpeedChart } from "./Charts";
 import { EventTimeline } from "./EventTimeline";
@@ -17,6 +18,8 @@ export function ReviewClient() {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [videoExtension, setVideoExtension] = useState("webm");
   const [replayMode, setReplayMode] = useState(false);
+  const [analysisProgress, setAnalysisProgress] = useState<number | null>(null);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
 
   useEffect(() => {
     let currentUrl: string | null = null;
@@ -47,6 +50,30 @@ export function ReviewClient() {
       mailto: `mailto:${encodeURIComponent(settings.emergencyContact.email)}?subject=${encodeURIComponent("Black Box possible high-impact event")}&body=${encodeURIComponent(body)}`
     };
   }, [session]);
+
+  async function runPostProcessingAnalysis() {
+    if (!session || !videoUrl || analysisProgress !== null) return;
+    setAnalysisError(null);
+    setAnalysisProgress(0);
+    try {
+      const hudFrames = await analyzeRecordedVideo({
+        videoUrl,
+        session,
+        onProgress: setAnalysisProgress
+      });
+      const analyzedSession: DriveSession = {
+        ...session,
+        hudFrames
+      };
+      await saveSession(analyzedSession);
+      setSession(analyzedSession);
+      setReplayMode(true);
+    } catch (error) {
+      setAnalysisError(error instanceof Error ? error.message : "Saved video analysis failed.");
+    } finally {
+      setAnalysisProgress(null);
+    }
+  }
 
   if (!session) {
     return (
@@ -120,7 +147,14 @@ export function ReviewClient() {
         <section className="rounded-lg border border-cockpit-line bg-cockpit-900 p-3">
           <div className="mb-3 flex items-center justify-between gap-3">
             <h2 className="font-black">Watch Most Recent Save</h2>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap justify-end gap-2">
+              <button
+                className="rounded-md border border-signal-green px-3 py-2 text-sm font-black text-signal-green disabled:opacity-50"
+                disabled={analysisProgress !== null}
+                onClick={() => void runPostProcessingAnalysis()}
+              >
+                {analysisProgress !== null ? `Analyzing ${Math.round(analysisProgress * 100)}%` : session.hudFrames.length ? "Re-analyze Video" : "Analyze Saved Video"}
+              </button>
               <button className="rounded-md border border-signal-blue px-3 py-2 text-sm font-black text-signal-blue" onClick={() => setReplayMode((current) => !current)}>
                 {replayMode ? "Normal Video" : "Replay Mode"}
               </button>
@@ -129,6 +163,19 @@ export function ReviewClient() {
               </a>
             </div>
           </div>
+          {analysisError ? <p className="mb-3 rounded-md border border-signal-amber/40 bg-signal-amber/10 p-3 text-sm text-signal-amber">{analysisError}</p> : null}
+          {analysisProgress !== null ? (
+            <div className="mb-3 rounded-md border border-cockpit-line bg-cockpit-950 p-3">
+              <div className="mb-2 flex justify-between text-xs font-bold uppercase tracking-wide text-slate-500">
+                <span>Post-processing target analysis</span>
+                <span>{Math.round(analysisProgress * 100)}%</span>
+              </div>
+              <div className="h-2 overflow-hidden rounded-full bg-cockpit-800">
+                <div className="h-full bg-signal-green transition-all" style={{ width: `${Math.round(analysisProgress * 100)}%` }} />
+              </div>
+            </div>
+          ) : null}
+          {!session.hudFrames.length ? <p className="mb-3 text-xs leading-5 text-slate-500">Real-time vehicle analysis is off by default. Use Analyze Saved Video to generate target locks and motion evidence for replay only when the clip is worth processing.</p> : null}
           {replayMode ? <ReplayMode session={session} videoUrl={videoUrl} /> : <video className="w-full rounded-lg border border-cockpit-line bg-black" src={videoUrl} controls playsInline preload="auto" />}
         </section>
       ) : (

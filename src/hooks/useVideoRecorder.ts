@@ -4,11 +4,12 @@ import { useCallback, useRef, useState } from "react";
 import { getVideoConstraints } from "@/lib/settings";
 import { deleteRecordingChunks, getRecordingChunks, saveRecordingChunk } from "@/lib/storage";
 import { YoloVehicleDetector, type VehicleDetection } from "@/lib/yolo-vehicle-detector";
-import type { CameraLens, HudFrame, HudOverlayMetrics, HudTarget, RecordedVideoChunk, VehicleClosingRisk, VehicleLockDisplayState, VehicleRelativeMotion, VehicleTrackEvidence, VideoQuality } from "@/types/drive";
+import type { CameraLens, DriveSession, GpsSample, HudFrame, HudOverlayMetrics, HudTarget, OrientationSample, RecordedVideoChunk, VehicleClosingRisk, VehicleLockDisplayState, VehicleRelativeMotion, VehicleTrackEvidence, VideoQuality } from "@/types/drive";
 
 type VideoRecorderStartOptions = {
   cameraLens: CameraLens;
   hudEnabled: boolean;
+  liveAnalysisEnabled: boolean;
   plateOcrEnabled: boolean;
   hudSensitivityAuto: boolean;
   hudSensitivity: number;
@@ -345,7 +346,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
   }, [getOverlayMetrics, startPlateOcr]);
 
   const startCompositeRecording = useCallback(
-    async (mediaStream: MediaStream, plateOcrEnabled: boolean) => {
+    async (mediaStream: MediaStream, options: Pick<VideoRecorderStartOptions, "liveAnalysisEnabled" | "plateOcrEnabled">) => {
       const video = document.createElement("video");
       video.muted = true;
       video.playsInline = true;
@@ -361,7 +362,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
       if (!ctx) throw new Error("Canvas recording is not available in this browser.");
 
       const drawFrame = () => {
-        updateVisualLeadTrack(video, tracksRef.current, leadLockRef.current, visualTrackerRef, hudTargetsRef, setHudTargets);
+        if (options.liveAnalysisEnabled) updateVisualLeadTrack(video, tracksRef.current, leadLockRef.current, visualTrackerRef, hudTargetsRef, setHudTargets);
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         drawHud(ctx, hudTargetsRef.current, canvas.width, canvas.height);
       };
@@ -390,7 +391,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
       };
       drawFrame();
       scheduleVideoFrame();
-      await startHudDetection(video, plateOcrEnabled);
+      if (options.liveAnalysisEnabled) await startHudDetection(video, options.plateOcrEnabled);
 
       const canvasStream = canvas.captureStream(RECORDING_FRAME_RATE);
       mediaStream.getAudioTracks().forEach((track) => canvasStream.addTrack(track));
@@ -437,7 +438,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
         return true;
       }
 
-      const recordingStream = options.hudEnabled ? await startCompositeRecording(mediaStream, options.plateOcrEnabled) : mediaStream;
+      const recordingStream = options.hudEnabled ? await startCompositeRecording(mediaStream, options) : mediaStream;
       const mimeType = getSupportedMimeType();
       const recorder = mimeType ? new MediaRecorder(recordingStream, { mimeType }) : new MediaRecorder(recordingStream);
       mimeTypeRef.current = recorder.mimeType || mimeType || "video/webm";
@@ -548,6 +549,86 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
   return { stream, hudTargets, hudFramesRef, recordingSupported, error, start, stop, getChunksInWindow, mimeTypeRef };
 }
 
+export async function analyzeRecordedVideo(input: {
+  videoUrl: string;
+  session: DriveSession;
+  cameraLens?: CameraLens;
+  hudSensitivityAuto?: boolean;
+  hudSensitivity?: number;
+  onProgress?: (progress: number) => void;
+}): Promise<HudFrame[]> {
+  const detector = await YoloVehicleDetector.load();
+  const video = document.createElement("video");
+  video.muted = true;
+  video.playsInline = true;
+  video.preload = "auto";
+  video.src = input.videoUrl;
+  await waitForVideoMetadata(video);
+
+  const durationSeconds = Math.min(Number.isFinite(video.duration) ? video.duration : input.session.durationSeconds, input.session.durationSeconds || video.duration || 0);
+  const sampleIntervalSeconds = 0.5;
+  const tracks: TrackedVehicle[] = [];
+  const nextTrackIdRef = { current: 1 };
+  const leadLock: LeadLockState = {
+    trackId: null,
+    lockedAt: null,
+    pendingTrackId: null,
+    pendingSince: null,
+    lostSince: null,
+    displayState: "no_vehicle"
+  };
+  const appearanceCanvasRef = { current: null as HTMLCanvasElement | null };
+  const plateMemory: Record<string, PlateMemory> = {};
+  const plateTexts: Record<string, string> = {};
+  const plateConfidences: Record<string, number> = {};
+  const horizontalFovDegrees = cameraLensFov(input.cameraLens ?? "auto");
+  const threshold = getHudConfidenceThreshold({
+    auto: input.hudSensitivityAuto ?? true,
+    sensitivity: input.hudSensitivity ?? 55
+  });
+  const frames: HudFrame[] = [];
+  let previousOrientation: Pick<HudOverlayMetrics, "orientationAlpha" | "orientationBeta" | "orientationGamma"> | null = null;
+
+  for (let seconds = 0; seconds <= durationSeconds; seconds += sampleIntervalSeconds) {
+    await seekVideo(video, Math.min(seconds, Math.max(0, durationSeconds - 0.05)));
+    const timestamp = input.session.startedAt + Math.round(seconds * 1000);
+    const gps = nearestByTimestamp(input.session.gpsSamples, timestamp);
+    const orientation = nearestByTimestamp(input.session.orientationSamples, timestamp);
+    const metrics: HudOverlayMetrics = {
+      timestamp,
+      ownSpeedMetresPerSecond: gps?.speedMetresPerSecond ?? null,
+      latitude: gps?.latitude ?? null,
+      longitude: gps?.longitude ?? null,
+      weather: null,
+      orientationAlpha: orientation?.alpha ?? null,
+      orientationBeta: orientation?.beta ?? null,
+      orientationGamma: orientation?.gamma ?? null
+    };
+    const detections = await detector.detect(video, threshold);
+    attachAppearanceSignatures(video, detections, appearanceCanvasRef);
+    const cameraShift = estimateCameraShift(metrics, previousOrientation);
+    previousOrientation = metrics;
+    const updates = updateTracks(tracks, detections, timestamp, nextTrackIdRef, metrics.ownSpeedMetresPerSecond, cameraShift, horizontalFovDegrees);
+    const lead = updateLeadLock(tracks, leadLock, timestamp);
+    const targets = buildHudTargets(updates, lead, leadLock, plateTexts, plateConfidences, plateMemory);
+    const leadTarget = lead ? targets.find((target) => target.id === lead.id) ?? null : null;
+    const visibleTargets = leadTarget ? [leadTarget] : [];
+    frames.push({
+      timestamp,
+      targets: visibleTargets,
+      detections: tracks.map((track) => track.lastEvidence).filter((evidence): evidence is VehicleTrackEvidence => Boolean(evidence)),
+      trackingState: leadLock.displayState
+    });
+    input.onProgress?.(durationSeconds > 0 ? Math.min(1, seconds / durationSeconds) : 1);
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+  }
+
+  input.onProgress?.(1);
+  video.removeAttribute("src");
+  video.load();
+  return frames;
+}
+
 function pruneRecordedChunks(chunks: RecordedVideoChunk[]): void {
   const oldestProtectedTime = Date.now() - 2 * 60 * 1000 - 10 * 1000;
   while (chunks.length && chunks[0].timestamp < oldestProtectedTime) chunks.shift();
@@ -562,6 +643,48 @@ async function buildRecordedBlob(recordingId: string | null, mimeType: string, w
   } finally {
     await deleteRecordingChunks(recordingId).catch(() => undefined);
   }
+}
+
+function waitForVideoMetadata(video: HTMLVideoElement): Promise<void> {
+  if (video.readyState >= HTMLMediaElement.HAVE_METADATA && video.duration) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    video.onloadedmetadata = () => resolve();
+    video.onerror = () => reject(new Error("Saved video could not be loaded for analysis."));
+    video.load();
+  });
+}
+
+function seekVideo(video: HTMLVideoElement, seconds: number): Promise<void> {
+  if (Math.abs(video.currentTime - seconds) < 0.01 && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const finish = () => {
+      video.removeEventListener("seeked", finish);
+      video.removeEventListener("error", fail);
+      resolve();
+    };
+    const fail = () => {
+      video.removeEventListener("seeked", finish);
+      video.removeEventListener("error", fail);
+      reject(new Error("Saved video seek failed during analysis."));
+    };
+    video.addEventListener("seeked", finish, { once: true });
+    video.addEventListener("error", fail, { once: true });
+    video.currentTime = seconds;
+  });
+}
+
+function nearestByTimestamp<T extends GpsSample | OrientationSample>(samples: T[], timestamp: number): T | null {
+  if (!samples.length) return null;
+  let best = samples[0];
+  let bestDelta = Math.abs(best.timestamp - timestamp);
+  for (const sample of samples) {
+    const delta = Math.abs(sample.timestamp - timestamp);
+    if (delta < bestDelta) {
+      best = sample;
+      bestDelta = delta;
+    }
+  }
+  return bestDelta <= 2500 ? best : null;
 }
 
 function updateTracks(

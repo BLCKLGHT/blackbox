@@ -16,6 +16,7 @@ import type { CameraLens } from "@/types/drive";
 type StartDriveOptions = {
   cameraLens: CameraLens;
   hudEnabled: boolean;
+  liveAnalysisEnabled: boolean;
   plateOcrEnabled: boolean;
   hudSensitivityAuto: boolean;
   hudSensitivity: number;

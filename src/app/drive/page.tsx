@@ -19,6 +19,7 @@ export default function DrivePage() {
   const [condensed, setCondensed] = useState(false);
   const [cameraLens, setCameraLens] = useState<CameraLens>("auto");
   const [hudEnabled, setHudEnabled] = useState(false);
+  const [liveAnalysisEnabled, setLiveAnalysisEnabled] = useState(false);
   const [plateOcrEnabled, setPlateOcrEnabled] = useState(false);
   const [hudSensitivityAuto, setHudSensitivityAuto] = useState(true);
   const [hudSensitivity, setHudSensitivity] = useState(55);
@@ -28,7 +29,7 @@ export default function DrivePage() {
   async function beginRecording() {
     setIsStarting(true);
     setHasStarted(true);
-    await drive.start({ cameraLens, hudEnabled, plateOcrEnabled: hudEnabled && plateOcrEnabled, hudSensitivityAuto, hudSensitivity });
+    await drive.start({ cameraLens, hudEnabled, liveAnalysisEnabled, plateOcrEnabled: liveAnalysisEnabled && plateOcrEnabled, hudSensitivityAuto, hudSensitivity });
     setIsStarting(false);
   }
 
@@ -66,26 +67,33 @@ export default function DrivePage() {
               <div className="space-y-2">
                 <label className="flex items-center justify-between gap-4 rounded-lg border border-cockpit-line bg-cockpit-950 p-3">
                   <span>
-                    <span className="block font-bold">HUD vehicle targeting</span>
-                    <span className="block text-xs leading-5 text-slate-500">Detects vehicles, draws green/yellow target boxes, and records boxes into the saved clip.</span>
+                    <span className="block font-bold">Video telemetry overlay</span>
+                    <span className="block text-xs leading-5 text-slate-500">Burns speed, time, GPS, weather, gyro, and the center reticle into the saved clip.</span>
+                  </span>
+                  <input type="checkbox" checked={hudEnabled} onChange={(event) => setHudEnabled(event.target.checked)} />
+                </label>
+                <label className="flex items-center justify-between gap-4 rounded-lg border border-cockpit-line bg-cockpit-950 p-3">
+                  <span>
+                    <span className="block font-bold">Real-time vehicle analysis</span>
+                    <span className="block text-xs leading-5 text-slate-500">Optional. Runs YOLO and target tracking while driving, which can heat the phone. Off by default; saved clips can be analyzed later.</span>
                   </span>
                   <input
                     type="checkbox"
-                    checked={hudEnabled}
+                    checked={liveAnalysisEnabled}
                     onChange={(event) => {
-                      setHudEnabled(event.target.checked);
+                      setLiveAnalysisEnabled(event.target.checked);
                       if (!event.target.checked) setPlateOcrEnabled(false);
                     }}
                   />
                 </label>
-                <label className={`flex items-center justify-between gap-4 rounded-lg border p-3 ${hudEnabled ? "border-cockpit-line bg-cockpit-950" : "border-cockpit-line bg-cockpit-900 opacity-60"}`}>
+                <label className={`flex items-center justify-between gap-4 rounded-lg border p-3 ${liveAnalysisEnabled ? "border-cockpit-line bg-cockpit-950" : "border-cockpit-line bg-cockpit-900 opacity-60"}`}>
                   <span>
                     <span className="block font-bold">Number plate OCR</span>
-                    <span className="block text-xs leading-5 text-slate-500">Opt-in OCR runs locally on vehicle crops and attaches plate-like text to HUD boxes when readable.</span>
+                    <span className="block text-xs leading-5 text-slate-500">Opt-in OCR runs locally on locked vehicle crops during real-time analysis.</span>
                   </span>
-                  <input type="checkbox" disabled={!hudEnabled} checked={plateOcrEnabled} onChange={(event) => setPlateOcrEnabled(event.target.checked)} />
+                  <input type="checkbox" disabled={!liveAnalysisEnabled} checked={plateOcrEnabled} onChange={(event) => setPlateOcrEnabled(event.target.checked)} />
                 </label>
-                <section className={`rounded-lg border p-3 ${hudEnabled ? "border-cockpit-line bg-cockpit-950" : "border-cockpit-line bg-cockpit-900 opacity-60"}`}>
+                <section className={`rounded-lg border p-3 ${liveAnalysisEnabled ? "border-cockpit-line bg-cockpit-950" : "border-cockpit-line bg-cockpit-900 opacity-60"}`}>
                   <div className="flex items-center justify-between gap-4">
                     <div>
                       <div className="font-bold">HUD lock sensitivity</div>
@@ -93,7 +101,7 @@ export default function DrivePage() {
                     </div>
                     <label className="flex items-center gap-2 text-sm font-bold">
                       Auto
-                      <input type="checkbox" disabled={!hudEnabled} checked={hudSensitivityAuto} onChange={(event) => setHudSensitivityAuto(event.target.checked)} />
+                      <input type="checkbox" disabled={!liveAnalysisEnabled} checked={hudSensitivityAuto} onChange={(event) => setHudSensitivityAuto(event.target.checked)} />
                     </label>
                   </div>
                   <input
@@ -102,7 +110,7 @@ export default function DrivePage() {
                     min={0}
                     max={100}
                     value={hudSensitivity}
-                    disabled={!hudEnabled || hudSensitivityAuto}
+                    disabled={!liveAnalysisEnabled || hudSensitivityAuto}
                     onChange={(event) => setHudSensitivity(Number(event.target.value))}
                   />
                   <div className="mt-1 flex justify-between text-xs text-slate-500">
