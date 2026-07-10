@@ -89,7 +89,7 @@ const DETECTION_INTERVAL_MS = 280;
 const LOCKED_DETECTION_INTERVAL_MS = 420;
 const REACQUIRE_DETECTION_INTERVAL_MS = 140;
 const VISUAL_TRACK_INTERVAL_MS = 66;
-const RECORDING_FRAME_RATE = 60;
+const RECORDING_FRAME_RATE = 30;
 const TRACK_IOU_THRESHOLD = 0.18;
 const MAX_TRACK_MISSES = 12;
 const LEAD_SWITCH_MARGIN = 0.34;
@@ -385,19 +385,22 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         drawHud(ctx, options.liveAnalysisEnabled ? hudTargetsRef.current : [], canvas.width, canvas.height);
       };
+      let lastDrawAt = 0;
+      const frameInterval = 1000 / RECORDING_FRAME_RATE;
       const scheduleVideoFrame = () => {
         if (!drawingActiveRef.current) return;
         const requestVideoFrameCallback = "requestVideoFrameCallback" in video ? video.requestVideoFrameCallback.bind(video) : null;
         if (requestVideoFrameCallback) {
-          videoFrameCallbackRef.current = requestVideoFrameCallback(() => {
+          videoFrameCallbackRef.current = requestVideoFrameCallback((now) => {
             if (!drawingActiveRef.current) return;
-            drawFrame();
+            if (now - lastDrawAt >= frameInterval) {
+              lastDrawAt = now;
+              drawFrame();
+            }
             scheduleVideoFrame();
           });
           return;
         }
-        let lastDrawAt = 0;
-        const frameInterval = 1000 / RECORDING_FRAME_RATE;
         const drawLoop = (now: number) => {
           if (!drawingActiveRef.current) return;
           if (now - lastDrawAt >= frameInterval) {

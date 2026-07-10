@@ -299,7 +299,7 @@ export function useDriveSession() {
     tick();
     const timer = window.setInterval(tick, 250);
     return () => window.clearInterval(timer);
-  }, [geo, isRecording, motion, settings.simulationMode]);
+  }, [geo.injectSample, isRecording, motion.injectSamples, settings.simulationMode]);
 
   useEffect(() => {
     const latest = geo.latestGps;
@@ -336,8 +336,10 @@ export function useDriveSession() {
     lastLocationFetchRef.current.timestamp = now;
     lastLocationFetchRef.current.latitude = latest.latitude;
     lastLocationFetchRef.current.longitude = latest.longitude;
-    fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${latest.latitude}&lon=${latest.longitude}&zoom=18&addressdetails=1`)
-      .then((response) => response.json())
+    const controller = new AbortController();
+    window.setTimeout(() => controller.abort(), 4500);
+    fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${latest.latitude}&lon=${latest.longitude}&zoom=18&addressdetails=1`, { signal: controller.signal })
+      .then((response) => (response.ok ? response.json() : null))
       .then((data) => setLocationLabel(formatLocationLabel(data?.address)))
       .catch(() => undefined);
   }, [geo.latestGps, isRecording, settings.simulationMode]);
