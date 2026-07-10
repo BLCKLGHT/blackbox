@@ -1582,9 +1582,9 @@ function getHudConfidenceThreshold(options: { auto: boolean; sensitivity: number
 }
 
 function getVideoBitsPerSecond(quality: VideoQuality): number {
-  if (quality === "high") return 14_000_000;
-  if (quality === "low") return 3_000_000;
-  return 8_000_000;
+  if (quality === "high") return 3_500_000;
+  if (quality === "low") return 800_000;
+  return 1_500_000;
 }
 
 function cameraLensFov(cameraLens: CameraLens): number {

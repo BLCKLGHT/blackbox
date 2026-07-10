@@ -242,18 +242,21 @@ export function useDriveSession() {
       }
       if (now - lastSessionSnapshotAtRef.current < 5000) return;
       lastSessionSnapshotAtRef.current = now;
-      detectImpact(motion.motionSamplesRef.current, geo.samplesRef.current);
+      const checkpointGpsSamples = geo.samplesRef.current.slice(-300);
+      const checkpointMotionSamples = motion.motionSamplesRef.current.slice(-900);
+      const checkpointOrientationSamples = motion.orientationSamplesRef.current.slice(-900);
+      detectImpact(checkpointMotionSamples, checkpointGpsSamples);
       const partial: DriveSession = {
         ...session,
         protected: session.protected || events.length > 0,
         durationSeconds: duration,
-        gpsSamples: geo.samplesRef.current,
-        motionSamples: motion.motionSamplesRef.current,
-        orientationSamples: motion.orientationSamplesRef.current,
+        gpsSamples: checkpointGpsSamples,
+        motionSamples: checkpointMotionSamples,
+        orientationSamples: checkpointOrientationSamples,
         hudFrames: video.hudFramesRef.current,
         highImpactEvents: events,
         manualMarkers,
-        summary: buildSummary(geo.samplesRef.current, motion.motionSamplesRef.current, events, manualMarkers)
+        summary: buildSummary(checkpointGpsSamples, checkpointMotionSamples, events, manualMarkers)
       };
       saveSession(partial).catch(console.error);
       const active = activeIncidentRef.current;

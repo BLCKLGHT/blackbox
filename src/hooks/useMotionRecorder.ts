@@ -22,6 +22,8 @@ export function useMotionRecorder() {
   const latestOrientationRef = useRef<OrientationSample | null>(null);
   const lastMotionUiAtRef = useRef(0);
   const lastOrientationUiAtRef = useRef(0);
+  const lastMotionStoredAtRef = useRef(0);
+  const lastOrientationStoredAtRef = useRef(0);
   const orientationBaselineRef = useRef<OrientationSample | null>(null);
 
   const requestMotionPermission = useCallback(() => {
@@ -62,8 +64,11 @@ export function useMotionRecorder() {
       interval: event.interval ?? null,
       magnitude
     };
-    motionSamplesRef.current.push(sample);
     latestMotionRef.current = sample;
+    if (sample.timestamp - lastMotionStoredAtRef.current >= 100) {
+      lastMotionStoredAtRef.current = sample.timestamp;
+      motionSamplesRef.current.push(sample);
+    }
     if (sample.timestamp - lastMotionUiAtRef.current > 100) {
       lastMotionUiAtRef.current = sample.timestamp;
       setLatestMotion(sample);
@@ -85,8 +90,11 @@ export function useMotionRecorder() {
       beta: zeroLinear(rawSample.beta, baseline.beta),
       gamma: zeroLinear(rawSample.gamma, baseline.gamma)
     };
-    orientationSamplesRef.current.push(rawSample);
     latestOrientationRef.current = zeroedSample;
+    if (zeroedSample.timestamp - lastOrientationStoredAtRef.current >= 100) {
+      lastOrientationStoredAtRef.current = zeroedSample.timestamp;
+      orientationSamplesRef.current.push(rawSample);
+    }
     if (zeroedSample.timestamp - lastOrientationUiAtRef.current > 100) {
       lastOrientationUiAtRef.current = zeroedSample.timestamp;
       setLatestOrientation(zeroedSample);
@@ -99,6 +107,8 @@ export function useMotionRecorder() {
     orientationBaselineRef.current = null;
     lastMotionUiAtRef.current = 0;
     lastOrientationUiAtRef.current = 0;
+    lastMotionStoredAtRef.current = 0;
+    lastOrientationStoredAtRef.current = 0;
     setLatestMotion(null);
     setLatestOrientation(null);
     latestMotionRef.current = null;
