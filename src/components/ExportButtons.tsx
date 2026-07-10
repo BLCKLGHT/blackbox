@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { buildTextSummary, exportSessionCsv, exportSessionJson, getVideoBlob } from "@/lib/storage";
 import { downloadBlob } from "@/lib/drive-utils";
 import { burnHudTelemetryIntoVideo } from "@/lib/hud-video-export";
+import { createZip, type ZipFileEntry } from "@/lib/zip";
 import type { DriveSession } from "@/types/drive";
 
 export function ExportButtons({ session }: { session: DriveSession }) {
@@ -13,6 +14,9 @@ export function ExportButtons({ session }: { session: DriveSession }) {
   const [markerClips, setMarkerClips] = useState<Array<{ id: string; url: string; type: string; timestamp: number }>>([]);
   const [hudExportProgress, setHudExportProgress] = useState<number | null>(null);
   const [hudExportError, setHudExportError] = useState<string | null>(null);
+  const [packageProgress, setPackageProgress] = useState<number | null>(null);
+  const [packageStatus, setPackageStatus] = useState("");
+  const [packageError, setPackageError] = useState<string | null>(null);
 
   useEffect(() => {
     let currentUrl: string | null = null;
@@ -75,6 +79,51 @@ export function ExportButtons({ session }: { session: DriveSession }) {
     }
   }
 
+  async function packageEvidence() {
+    if (!session.videoBlobId || !videoUrl || packageProgress !== null) return;
+    setPackageError(null);
+    setPackageProgress(0);
+    setPackageStatus("Collecting data files");
+    try {
+      const entries: ZipFileEntry[] = [
+        { path: "data/session.json", blob: exportSessionJson(session) },
+        { path: "data/gps.csv", blob: exportSessionCsv(session, "gps") },
+        { path: "data/motion.csv", blob: exportSessionCsv(session, "motion") },
+        { path: "data/summary.txt", blob: buildTextSummary(session) }
+      ];
+
+      const rawVideo = await getVideoBlob(session.videoBlobId);
+      if (rawVideo) entries.push({ path: `video/raw-video.${extensionFor(rawVideo.type)}`, blob: rawVideo });
+
+      setPackageStatus("Generating HUD video");
+      const hudVideo = await burnHudTelemetryIntoVideo({
+        videoUrl,
+        session,
+        onProgress: (progress) => setPackageProgress(progress * 0.75)
+      });
+      entries.push({ path: `video/hud-video.${extensionFor(hudVideo.type)}`, blob: hudVideo });
+
+      setPackageStatus("Adding marked event clips");
+      const markers = session.manualMarkers.filter((marker) => marker.clipVideoBlobId);
+      for (let index = 0; index < markers.length; index += 1) {
+        const marker = markers[index];
+        const clip = marker.clipVideoBlobId ? await getVideoBlob(marker.clipVideoBlobId) : null;
+        if (clip) entries.push({ path: `marked-events/marked-event-${index + 1}.${extensionFor(clip.type)}`, blob: clip });
+      }
+
+      setPackageStatus("Creating ZIP package");
+      setPackageProgress(0.9);
+      const zip = await createZip(entries);
+      setPackageProgress(1);
+      downloadBlob(zip, `${base}-evidence-package.zip`);
+    } catch (error) {
+      setPackageError(error instanceof Error ? error.message : "Could not package evidence.");
+    } finally {
+      setPackageProgress(null);
+      setPackageStatus("");
+    }
+  }
+
   return (
     <section className="rounded-lg border border-cockpit-line bg-cockpit-900 p-4">
       <h2 className="font-black">Export Evidence</h2>
@@ -99,6 +148,9 @@ export function ExportButtons({ session }: { session: DriveSession }) {
             <button className="touch-target col-span-2 rounded-md bg-signal-blue px-3 py-2 text-center font-black text-cockpit-950 disabled:opacity-60" disabled={hudExportProgress !== null} onClick={() => void exportHudVideo()}>
               {hudExportProgress !== null ? `Generating HUD Video ${Math.round(hudExportProgress * 100)}%` : "Generate HUD Video"}
             </button>
+            <button className="touch-target col-span-2 rounded-md bg-signal-green px-3 py-3 text-center font-black text-cockpit-950 disabled:opacity-60" disabled={packageProgress !== null} onClick={() => void packageEvidence()}>
+              {packageProgress !== null ? `Packaging Evidence ${Math.round(packageProgress * 100)}%` : "Package Evidence ZIP"}
+            </button>
           </>
         ) : (
           <button className="touch-target col-span-2 rounded-md bg-cockpit-800 px-3 py-2 text-slate-500" disabled>
@@ -107,6 +159,7 @@ export function ExportButtons({ session }: { session: DriveSession }) {
         )}
       </div>
       {hudExportError ? <p className="mt-3 rounded-md border border-signal-amber/40 bg-signal-amber/10 p-3 text-sm text-signal-amber">{hudExportError}</p> : null}
+      {packageError ? <p className="mt-3 rounded-md border border-signal-amber/40 bg-signal-amber/10 p-3 text-sm text-signal-amber">{packageError}</p> : null}
       {hudExportProgress !== null ? (
         <div className="mt-3 rounded-md border border-cockpit-line bg-cockpit-950 p-3">
           <div className="mb-2 flex justify-between text-xs font-bold uppercase tracking-wide text-slate-500">
@@ -115,6 +168,17 @@ export function ExportButtons({ session }: { session: DriveSession }) {
           </div>
           <div className="h-2 overflow-hidden rounded-full bg-cockpit-800">
             <div className="h-full bg-signal-green transition-all" style={{ width: `${Math.round(hudExportProgress * 100)}%` }} />
+          </div>
+        </div>
+      ) : null}
+      {packageProgress !== null ? (
+        <div className="mt-3 rounded-md border border-cockpit-line bg-cockpit-950 p-3">
+          <div className="mb-2 flex justify-between text-xs font-bold uppercase tracking-wide text-slate-500">
+            <span>{packageStatus || "Packaging evidence"}</span>
+            <span>{Math.round(packageProgress * 100)}%</span>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-cockpit-800">
+            <div className="h-full bg-signal-green transition-all" style={{ width: `${Math.round(packageProgress * 100)}%` }} />
           </div>
         </div>
       ) : null}
@@ -133,4 +197,10 @@ export function ExportButtons({ session }: { session: DriveSession }) {
       ) : null}
     </section>
   );
+}
+
+function extensionFor(contentType: string): string {
+  if (contentType.includes("mp4")) return "mp4";
+  if (contentType.includes("webm")) return "webm";
+  return "bin";
 }
