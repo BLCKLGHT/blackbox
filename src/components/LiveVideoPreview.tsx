@@ -32,12 +32,17 @@ export function LiveVideoPreview({
   const roll = latestOrientation?.gamma ?? 0;
   const heading = latestOrientation?.alpha ?? latestGps?.heading ?? 0;
   const motionForce = latestMotion?.magnitude ?? 0;
-  const acceleration = useMemo(() => calculateAcceleration(gpsSamples), [gpsSamples]);
-  const graphSamples = useMemo(() => buildAccelerationGraph(gpsSamples), [gpsSamples]);
+  const acceleration = useMemo(() => calculateAcceleration(gpsSamples) ?? latestMotion?.accelerationX ?? null, [gpsSamples, latestMotion?.accelerationX]);
+  const [graphSamples, setGraphSamples] = useState<number[]>([]);
 
   useEffect(() => {
     if (ref.current) ref.current.srcObject = stream;
   }, [stream]);
+
+  useEffect(() => {
+    if (acceleration === null || !Number.isFinite(acceleration)) return;
+    setGraphSamples((current) => [...current.slice(-35), acceleration]);
+  }, [acceleration, latestGps?.timestamp, latestMotion?.timestamp]);
 
   useEffect(() => {
     if (!immersiveFullscreen) return undefined;
@@ -140,21 +145,15 @@ function AccelerationMiniGraph({ samples, latest }: { samples: number[]; latest:
   );
 }
 
-function buildAccelerationGraph(samples: GpsSample[]): number[] {
-  const accelerations: number[] = [];
+function calculateAcceleration(samples: GpsSample[]): number | null {
   const valid = samples.filter((sample) => sample.speedMetresPerSecond !== null).slice(-14);
-  for (let index = 1; index < valid.length; index += 1) {
+  for (let index = valid.length - 1; index >= 1; index -= 1) {
     const previous = valid[index - 1];
     const current = valid[index];
     const seconds = (current.timestamp - previous.timestamp) / 1000;
-    if (seconds >= 0.35 && seconds <= 4) accelerations.push(((current.speedMetresPerSecond ?? 0) - (previous.speedMetresPerSecond ?? 0)) / seconds);
+    if (seconds >= 0.35 && seconds <= 4) return ((current.speedMetresPerSecond ?? 0) - (previous.speedMetresPerSecond ?? 0)) / seconds;
   }
-  return accelerations;
-}
-
-function calculateAcceleration(samples: GpsSample[]): number | null {
-  const graph = buildAccelerationGraph(samples);
-  return graph.length ? graph[graph.length - 1] : null;
+  return null;
 }
 
 function clamp(value: number, min: number, max: number): number {

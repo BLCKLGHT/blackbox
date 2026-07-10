@@ -33,7 +33,7 @@ export function useDriveSession() {
   const lastLocationFetchRef = useRef({ timestamp: 0, latitude: 0, longitude: 0 });
   const getOverlayMetrics = useCallback(
     (): HudOverlayMetrics => {
-      const acceleration = calculateLongitudinalAcceleration(geo.samplesRef.current);
+      const acceleration = calculateLongitudinalAcceleration(geo.samplesRef.current) ?? motion.latestMotionRef.current?.accelerationX ?? null;
       return {
         timestamp: Date.now(),
         ownSpeedMetresPerSecond: geo.latestGpsRef.current?.speedMetresPerSecond ?? null,
@@ -62,6 +62,7 @@ export function useDriveSession() {
   const [gpsTrail, setGpsTrail] = useState(session.gpsSamples);
   const activeStartedAtRef = useRef(session.startedAt);
   const lastSessionSnapshotAtRef = useRef(0);
+  const lastHudTrailAtRef = useRef(0);
   const simulationDistanceRef = useRef(0);
   const simulationLastRef = useRef<{ timestamp: number; speed: number } | null>(null);
   const activeIncidentRef = useRef<{
@@ -145,6 +146,7 @@ export function useDriveSession() {
     activeIncidentRef.current = null;
     activeStartedAtRef.current = started.startedAt;
     lastSessionSnapshotAtRef.current = 0;
+    lastHudTrailAtRef.current = 0;
     simulationDistanceRef.current = 0;
     simulationLastRef.current = null;
     setSession(started);
@@ -217,9 +219,12 @@ export function useDriveSession() {
       const now = Date.now();
       const duration = Math.max(0, Math.floor((now - activeStartedAtRef.current) / 1000));
       setElapsed(duration);
+      if (now - lastHudTrailAtRef.current >= 500) {
+        lastHudTrailAtRef.current = now;
+        setGpsTrail(geo.samplesRef.current.slice(-80));
+      }
       if (now - lastSessionSnapshotAtRef.current < 5000) return;
       lastSessionSnapshotAtRef.current = now;
-      setGpsTrail(geo.samplesRef.current.slice(-80));
       detectImpact(motion.motionSamplesRef.current, geo.samplesRef.current);
       const partial: DriveSession = {
         ...session,
