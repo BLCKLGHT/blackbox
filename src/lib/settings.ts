@@ -5,6 +5,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   impactSensitivity: "medium",
   videoQuality: "medium",
   audioRecording: false,
+  simulationMode: false,
   retentionHours: 48,
   emergencyContact: {
     name: "",

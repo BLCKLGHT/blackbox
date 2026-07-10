@@ -43,5 +43,11 @@ export function useGeolocationRecorder() {
     return samplesRef.current;
   }, []);
 
-  return { latestGps, latestGpsRef, error, samplesRef, start, stop };
+  const injectSample = useCallback((sample: GpsSample) => {
+    samplesRef.current.push(sample);
+    latestGpsRef.current = sample;
+    setLatestGps(sample);
+  }, []);
+
+  return { latestGps, latestGpsRef, error, samplesRef, start, stop, injectSample };
 }

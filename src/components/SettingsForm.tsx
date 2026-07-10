@@ -45,6 +45,13 @@ export function SettingsForm() {
         <span>Audio recording</span>
         <input type="checkbox" checked={settings.audioRecording} onChange={(event) => update({ audioRecording: event.target.checked })} />
       </label>
+      <label className="flex items-center justify-between gap-4 rounded-lg border border-signal-blue/50 bg-cockpit-900 p-4">
+        <span>
+          <span className="block font-bold">Simulation mode</span>
+          <span className="block text-xs leading-5 text-slate-500">Feeds synthetic GPS, acceleration, braking, motion, and gyro data so you can test the HUD without driving. Emergency cloud alerts are disabled in this mode.</span>
+        </span>
+        <input type="checkbox" checked={settings.simulationMode} onChange={(event) => update({ simulationMode: event.target.checked })} />
+      </label>
       <Field label="Retention">
         <select className="w-full rounded-md border border-cockpit-line bg-cockpit-900 p-3" value={settings.retentionHours} onChange={(event) => update({ retentionHours: normaliseRetention(event.target.value) })}>
           <option value={24}>24 hours</option>

@@ -128,7 +128,16 @@ export function useMotionRecorder() {
     return { motionSamples: motionSamplesRef.current, orientationSamples: orientationSamplesRef.current };
   }, [onMotion, onOrientation]);
 
-  return { latestMotion, latestOrientation, latestMotionRef, latestOrientationRef, error, motionSamplesRef, orientationSamplesRef, start, stop };
+  const injectSamples = useCallback((motionSample: MotionSample, orientationSample: OrientationSample) => {
+    motionSamplesRef.current.push(motionSample);
+    orientationSamplesRef.current.push(orientationSample);
+    latestMotionRef.current = motionSample;
+    latestOrientationRef.current = orientationSample;
+    setLatestMotion(motionSample);
+    setLatestOrientation(orientationSample);
+  }, []);
+
+  return { latestMotion, latestOrientation, latestMotionRef, latestOrientationRef, error, motionSamplesRef, orientationSamplesRef, start, stop, injectSamples };
 }
 
 function zeroLinear(value: number | null, baseline: number | null): number | null {

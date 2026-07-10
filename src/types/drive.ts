@@ -238,6 +238,7 @@ export interface AppSettings {
   impactSensitivity: ImpactSensitivity;
   videoQuality: VideoQuality;
   audioRecording: boolean;
+  simulationMode: boolean;
   retentionHours: RetentionHours;
   emergencyContact: {
     name: string;
