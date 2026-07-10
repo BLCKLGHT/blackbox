@@ -58,6 +58,7 @@ export function useDriveSession() {
   const [elapsed, setElapsed] = useState(0);
   const [events, setEvents] = useState<HighImpactEvent[]>([]);
   const [manualMarkers, setManualMarkers] = useState<ManualMarker[]>([]);
+  const manualMarkersRef = useRef<ManualMarker[]>([]);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [gpsTrail, setGpsTrail] = useState(session.gpsSamples);
   const activeStartedAtRef = useRef(session.startedAt);
@@ -155,6 +156,7 @@ export function useDriveSession() {
     setGpsTrail([]);
     setEvents([]);
     setManualMarkers([]);
+    manualMarkersRef.current = [];
     setIsRecording(true);
     const videoPromise = video.start(options);
     const geoStarted = geo.start();
@@ -182,36 +184,51 @@ export function useDriveSession() {
       videoBlobId = createId("video");
       await saveVideoBlob(videoBlobId, videoBlob);
     }
+    const markersWithClips = await Promise.all(
+      manualMarkersRef.current.map(async (marker) => {
+        const clipBlob = video.buildClipBlob(marker.clipWindowStart, marker.clipWindowEnd);
+        if (!clipBlob) return marker;
+        const clipVideoBlobId = createId("marker-video");
+        await saveVideoBlob(clipVideoBlobId, clipBlob);
+        return { ...marker, clipVideoBlobId };
+      })
+    );
     const finalSession: DriveSession = {
       ...session,
       endedAt,
       durationSeconds: Math.round((endedAt - session.startedAt) / 1000),
       videoBlobId,
-      protected: session.protected || events.length > 0,
+      protected: session.protected || events.length > 0 || markersWithClips.length > 0,
       gpsSamples,
       motionSamples,
       orientationSamples,
       hudFrames: video.hudFramesRef.current,
       highImpactEvents: events,
-      manualMarkers,
-      summary: buildSummary(gpsSamples, motionSamples, events, manualMarkers)
+      manualMarkers: markersWithClips,
+      summary: buildSummary(gpsSamples, motionSamples, events, markersWithClips)
     };
     await saveSession(finalSession);
     setIsRecording(false);
     router.push("/review");
-  }, [events, geo, manualMarkers, motion, router, session, uploadActiveIncident, video]);
+  }, [events, geo, motion, router, session, uploadActiveIncident, video]);
 
   const markEvent = useCallback(() => {
-    setManualMarkers((current) => [
-      ...current,
-      {
-        id: createId("marker"),
-        timestamp: Date.now(),
-        label: "Manual marker",
-        notes: "User marked an event during the drive."
-      }
-    ]);
-  }, []);
+    const timestamp = Date.now();
+    const marker: ManualMarker = {
+      id: createId("marker"),
+      timestamp,
+      label: "Manual marker",
+      notes: "User marked an event during the drive. A local clip window is protected from 3 minutes before to 3 minutes after this timestamp.",
+      clipWindowStart: timestamp - 3 * 60 * 1000,
+      clipWindowEnd: timestamp + 3 * 60 * 1000,
+      clipVideoBlobId: null
+    };
+    video.protectClipWindow(marker.id, timestamp);
+    playMarkerSound();
+    manualMarkersRef.current = [...manualMarkersRef.current, marker];
+    setManualMarkers(manualMarkersRef.current);
+    setSession((current) => ({ ...current, protected: true }));
+  }, [video]);
 
   useEffect(() => {
     if (!isRecording) return;
@@ -432,4 +449,29 @@ function simulationProfile(elapsedSeconds: number): { speedMetresPerSecond: numb
   if (cycle < 43) return { speedMetresPerSecond: 11.1, accelerationMetresPerSecondSquared: 0, braking: false };
   const deceleration = -2.8;
   return { speedMetresPerSecond: Math.max(0, 11.1 + (cycle - 43) * deceleration), accelerationMetresPerSecondSquared: deceleration, braking: true };
+}
+
+function playMarkerSound(): void {
+  try {
+    const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextClass) return;
+    const context = new AudioContextClass();
+    const gain = context.createGain();
+    gain.gain.setValueAtTime(0.0001, context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.18, context.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.28);
+    gain.connect(context.destination);
+
+    [880, 1320].forEach((frequency, index) => {
+      const oscillator = context.createOscillator();
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(frequency, context.currentTime + index * 0.09);
+      oscillator.connect(gain);
+      oscillator.start(context.currentTime + index * 0.09);
+      oscillator.stop(context.currentTime + index * 0.09 + 0.12);
+    });
+    window.setTimeout(() => void context.close().catch(() => undefined), 500);
+  } catch {
+    // Audio feedback is best-effort; marking the event must never fail because sound playback is blocked.
+  }
 }

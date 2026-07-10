@@ -139,6 +139,7 @@ export default function DrivePage() {
           stream={drive.stream}
           hudTargets={drive.hudTargets}
           locationLabel={drive.locationLabel}
+          onMarkEvent={drive.markEvent}
           compact={condensed}
         />
         {drive.videoSupported ? null : (
@@ -168,7 +169,7 @@ export default function DrivePage() {
           GPS accuracy: {drive.currentGps?.accuracy ? `${drive.currentGps.accuracy.toFixed(0)}m` : "Waiting for fix"}
         </section>
         {drive.isRecording ? (
-          <DriveControls onMarkEvent={drive.markEvent} onStop={() => void drive.stop()} />
+          <DriveControls onStop={() => void drive.stop()} />
         ) : (
           <div className="grid gap-3 sm:grid-cols-2">
             {hasStarted ? (

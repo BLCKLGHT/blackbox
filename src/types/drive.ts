@@ -204,6 +204,9 @@ export interface ManualMarker {
   timestamp: number;
   label: string;
   notes: string;
+  clipWindowStart: number;
+  clipWindowEnd: number;
+  clipVideoBlobId: string | null;
 }
 
 export interface DriveSummary {

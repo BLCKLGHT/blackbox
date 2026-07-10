@@ -15,6 +15,7 @@ export function RecordingCockpit({
   latestOrientation,
   stream,
   hudTargets,
+  onMarkEvent,
   compact = false
 }: {
   elapsed: number;
@@ -25,6 +26,7 @@ export function RecordingCockpit({
   latestOrientation: OrientationSample | null;
   stream: MediaStream | null;
   hudTargets: HudTarget[];
+  onMarkEvent: () => void;
   compact?: boolean;
 }) {
   return (
@@ -55,6 +57,15 @@ export function RecordingCockpit({
         latestMotion={latestMotion}
         latestOrientation={latestOrientation}
       />
+      <button
+        type="button"
+        onClick={onMarkEvent}
+        className={`touch-target w-full rounded-lg border-2 border-signal-amber bg-signal-amber px-5 font-black uppercase tracking-wide text-cockpit-950 shadow-[0_0_22px_rgba(245,158,11,0.35)] active:translate-y-px ${
+          compact ? "py-3 text-base" : "py-5 text-xl"
+        }`}
+      >
+        Mark Event
+      </button>
       <div className={compact ? "grid grid-cols-[minmax(0,1.25fr)_minmax(104px,0.75fr)] gap-2" : "grid gap-3 md:grid-cols-[minmax(0,1.35fr)_minmax(180px,0.65fr)]"}>
         <TargetDistancePanel targets={hudTargets} compact={compact} />
         <SpeedDisplay speed={latestGps?.speedMetresPerSecond} compact={compact} />

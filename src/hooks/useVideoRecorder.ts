@@ -79,6 +79,12 @@ type VisualTrackerState = {
   lastUiAt: number;
 };
 
+type ProtectedClipWindow = {
+  id: string;
+  start: number;
+  end: number;
+};
+
 type ForceGraphSample = {
   timestamp: number;
   acceleration: number;
@@ -97,6 +103,7 @@ const LEAD_SWITCH_HOLD_MS = 1500;
 const WEAK_LOCK_MS = 750;
 const FORCE_GRAPH_WINDOW_MS = 9000;
 const MAX_GRAPH_ACCELERATION = 6;
+const MARK_EVENT_CLIP_RADIUS_MS = 3 * 60 * 1000;
 
 export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverlayMetrics: () => HudOverlayMetrics) {
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -106,6 +113,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
   const [error, setError] = useState<string | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<RecordedVideoChunk[]>([]);
+  const protectedClipWindowsRef = useRef<ProtectedClipWindow[]>([]);
   const recordingIdRef = useRef<string | null>(null);
   const chunkSequenceRef = useRef(0);
   const chunkWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -471,6 +479,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
       chunkSequenceRef.current = 0;
       chunkWriteQueueRef.current = Promise.resolve();
       recordedChunksRef.current = [];
+      protectedClipWindowsRef.current = [];
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           const recordingId = recordingIdRef.current;
@@ -489,7 +498,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
             blob: event.data,
             contentType: event.data.type || mimeTypeRef.current
           });
-          pruneRecordedChunks(recordedChunksRef.current);
+          pruneRecordedChunks(recordedChunksRef.current, protectedClipWindowsRef.current);
         }
       };
       recorder.start(1000);
@@ -571,7 +580,23 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
     return recordedChunksRef.current.filter((chunk) => chunk.timestamp >= start && chunk.timestamp <= end);
   }, []);
 
-  return { stream, hudTargets, hudFramesRef, recordingSupported, error, start, stop, getChunksInWindow, mimeTypeRef };
+  const protectClipWindow = useCallback((id: string, timestamp: number) => {
+    protectedClipWindowsRef.current = [
+      ...protectedClipWindowsRef.current.filter((window) => window.id !== id),
+      { id, start: timestamp - MARK_EVENT_CLIP_RADIUS_MS, end: timestamp + MARK_EVENT_CLIP_RADIUS_MS }
+    ];
+    pruneRecordedChunks(recordedChunksRef.current, protectedClipWindowsRef.current);
+  }, []);
+
+  const buildClipBlob = useCallback(
+    (start: number, end: number) => {
+      const chunks = getChunksInWindow(start, end);
+      return chunks.length ? new Blob(chunks.map((chunk) => chunk.blob), { type: mimeTypeRef.current }) : null;
+    },
+    [getChunksInWindow]
+  );
+
+  return { stream, hudTargets, hudFramesRef, recordingSupported, error, start, stop, getChunksInWindow, protectClipWindow, buildClipBlob, mimeTypeRef };
 }
 
 export async function analyzeRecordedVideo(input: {
@@ -663,9 +688,13 @@ export async function analyzeRecordedVideo(input: {
   return frames;
 }
 
-function pruneRecordedChunks(chunks: RecordedVideoChunk[]): void {
-  const oldestProtectedTime = Date.now() - 2 * 60 * 1000 - 10 * 1000;
-  while (chunks.length && chunks[0].timestamp < oldestProtectedTime) chunks.shift();
+function pruneRecordedChunks(chunks: RecordedVideoChunk[], protectedWindows: ProtectedClipWindow[]): void {
+  const oldestRollingTime = Date.now() - MARK_EVENT_CLIP_RADIUS_MS - 10 * 1000;
+  for (let index = chunks.length - 1; index >= 0; index -= 1) {
+    const chunk = chunks[index];
+    if (chunk.timestamp >= oldestRollingTime || protectedWindows.some((window) => chunk.timestamp >= window.start && chunk.timestamp <= window.end)) continue;
+    chunks.splice(index, 1);
+  }
 }
 
 async function buildRecordedBlob(recordingId: string | null, mimeType: string, writeQueue: Promise<void>): Promise<Blob | null> {

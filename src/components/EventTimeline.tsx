@@ -3,7 +3,16 @@ import type { HighImpactEvent, ManualMarker } from "@/types/drive";
 export function EventTimeline({ impacts, markers }: { impacts: HighImpactEvent[]; markers: ManualMarker[] }) {
   const items = [
     ...impacts.map((event) => ({ id: event.id, timestamp: event.timestamp, title: "Possible High Impact", detail: event.triggerReasons.join("; "), tone: "text-signal-amber" })),
-    ...markers.map((marker) => ({ id: marker.id, timestamp: marker.timestamp, title: marker.label, detail: marker.notes, tone: "text-signal-blue" }))
+    ...markers.map((marker) => ({
+      id: marker.id,
+      timestamp: marker.timestamp,
+      title: marker.clipVideoBlobId ? `${marker.label} clip saved` : marker.label,
+      detail:
+        marker.clipWindowStart && marker.clipWindowEnd
+          ? `${marker.notes} Clip window: ${new Date(marker.clipWindowStart).toLocaleTimeString()} - ${new Date(marker.clipWindowEnd).toLocaleTimeString()}.`
+          : marker.notes,
+      tone: "text-signal-blue"
+    }))
   ].sort((a, b) => a.timestamp - b.timestamp);
 
   return (
