@@ -27,9 +27,9 @@ export function getImpactThreshold(setting: ImpactSensitivity): number {
 
 export function getVideoConstraints(quality: VideoQuality): MediaTrackConstraints {
   const base: MediaTrackConstraints = { facingMode: { ideal: "environment" } };
-  if (quality === "low") return { ...base, width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24 } };
-  if (quality === "high") return { ...base, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } };
-  return { ...base, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } };
+  if (quality === "low") return { ...base, width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30, max: 60 } };
+  if (quality === "high") return { ...base, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 60, max: 60 } };
+  return { ...base, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60, max: 60 } };
 }
 
 export function normaliseRetention(value: string): RetentionHours {

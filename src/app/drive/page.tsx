@@ -68,7 +68,7 @@ export default function DrivePage() {
                 <label className="flex items-center justify-between gap-4 rounded-lg border border-cockpit-line bg-cockpit-950 p-3">
                   <span>
                     <span className="block font-bold">Video telemetry overlay</span>
-                    <span className="block text-xs leading-5 text-slate-500">Burns speed, time, GPS, weather, gyro, and the center reticle into the saved clip.</span>
+                    <span className="block text-xs leading-5 text-slate-500">Burns speed, time, GPS, road label, gyro, and the center reticle into the saved clip.</span>
                   </span>
                   <input type="checkbox" checked={hudEnabled} onChange={(event) => setHudEnabled(event.target.checked)} />
                 </label>
@@ -138,7 +138,7 @@ export default function DrivePage() {
           latestOrientation={drive.currentOrientation}
           stream={drive.stream}
           hudTargets={drive.hudTargets}
-          weather={drive.weather}
+          locationLabel={drive.locationLabel}
           compact={condensed}
         />
         {drive.videoSupported ? null : (

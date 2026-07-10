@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { metresPerSecondToKmh } from "@/lib/drive-utils";
-import type { GpsSample, HudTarget, MotionSample, OrientationSample, WeatherInfo } from "@/types/drive";
+import type { GpsSample, HudTarget, MotionSample, OrientationSample } from "@/types/drive";
 
 export function LiveVideoPreview({
   stream,
@@ -11,9 +11,9 @@ export function LiveVideoPreview({
   hudTargets = [],
   gpsSamples = [],
   latestGps = null,
+  locationLabel = null,
   latestMotion = null,
-  latestOrientation = null,
-  weather = null
+  latestOrientation = null
 }: {
   stream: MediaStream | null;
   prominent?: boolean;
@@ -21,14 +21,13 @@ export function LiveVideoPreview({
   hudTargets?: HudTarget[];
   gpsSamples?: GpsSample[];
   latestGps?: GpsSample | null;
+  locationLabel?: string | null;
   latestMotion?: MotionSample | null;
   latestOrientation?: OrientationSample | null;
-  weather?: WeatherInfo | null;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [immersiveFullscreen, setImmersiveFullscreen] = useState(false);
-  const locked = useMemo(() => hudTargets.find((target) => target.lockState === "locked") ?? null, [hudTargets]);
   const pitch = latestOrientation?.beta ?? 0;
   const roll = latestOrientation?.gamma ?? 0;
   const heading = latestOrientation?.alpha ?? latestGps?.heading ?? 0;
@@ -97,39 +96,6 @@ export function LiveVideoPreview({
       ) : (
         <div className="flex h-full items-center justify-center px-6 text-center text-sm text-slate-500">Camera preview will appear after permission is granted.</div>
       )}
-      <div className="pointer-events-none absolute inset-0">
-        <div
-          className={`absolute border-2 border-signal-green transition-all duration-300 ease-out ${
-            locked ? (locked.displayState === "strong_lock" ? "opacity-100 shadow-[0_0_12px_rgba(74,222,128,0.65)]" : "opacity-60") : "opacity-25"
-          }`}
-          style={
-            locked
-              ? {
-                  left: `${locked.x * 100}%`,
-                  top: `${locked.y * 100}%`,
-                  width: `${locked.width * 100}%`,
-                  height: `${locked.height * 100}%`
-                }
-              : {
-                  left: "41%",
-                  top: "41%",
-                  width: "18%",
-                  height: "18%"
-                }
-          }
-        >
-          {locked ? (
-            <span
-              className={`absolute left-0 whitespace-nowrap rounded-sm bg-signal-green px-2 py-1 font-black uppercase text-cockpit-950 ${
-                immersiveFullscreen ? "-bottom-8 text-xs" : "-bottom-7 text-[10px]"
-              }`}
-            >
-              {formatVehicleSpeed(locked.estimatedVehicleSpeedKmh)}
-              {locked.plateText && (locked.plateConfidence ?? 0) >= 90 ? `  ${locked.plateText}` : ""}
-            </span>
-          ) : null}
-        </div>
-      </div>
       <div
         className={`pointer-events-none absolute z-10 max-w-[82%] rounded-md border border-signal-green/40 bg-black/70 font-mono font-bold uppercase text-signal-green ${
           immersiveFullscreen
@@ -145,10 +111,7 @@ export function LiveVideoPreview({
         <div>HDG {heading.toFixed(0).padStart(3, "0")} / FORCE {motionForce.toFixed(1)}</div>
         <div>{new Date().toLocaleTimeString()}</div>
         <div>{latestGps ? `${latestGps.latitude.toFixed(5)}, ${latestGps.longitude.toFixed(5)}` : "GPS --"}</div>
-        <div>{weather ? `${weather.temperatureCelsius?.toFixed(0) ?? "--"}C ${weather.summary}` : "WX --"}</div>
-        <div>{locked?.estimatedCarLengthsAhead !== null && locked?.estimatedCarLengthsAhead !== undefined ? `${locked.estimatedCarLengthsAhead.toFixed(1)} CAR LENGTHS` : "NO TARGET"}</div>
-        <div>{locked ? `${motionLabel(locked.relativeMotionEstimate)} / RISK ${(locked.closingRisk ?? "unknown").toUpperCase()}` : "REL MOTION --"}</div>
-        <div>{locked ? `${lockLabel(locked.displayState)} / TC ${Math.round((locked.trackConfidence ?? 0) * 100)} / ${(locked.lockDurationMs / 1000).toFixed(1)}S` : "SEARCHING"}</div>
+        <div>{locationLabel ?? "ROAD --"}</div>
       </div>
     </div>
   );
@@ -196,23 +159,4 @@ function calculateAcceleration(samples: GpsSample[]): number | null {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
-}
-
-function motionLabel(motion: HudTarget["relativeMotionEstimate"] | undefined): string {
-  if (!motion) return "UNKNOWN";
-  if (motion === "moving_away") return "MOVING AWAY";
-  return motion.toUpperCase();
-}
-
-function lockLabel(state: HudTarget["displayState"] | undefined): string {
-  if (state === "strong_lock") return "STRONG LOCK";
-  if (state === "weak_lock") return "WEAK LOCK";
-  if (state === "lost_target") return "LOST";
-  if (state === "no_vehicle") return "NO VEHICLE";
-  return "SEARCHING";
-}
-
-function formatVehicleSpeed(speedKmh: number | null | undefined): string {
-  if (speedKmh === null || speedKmh === undefined || !Number.isFinite(speedKmh)) return "EST: -- KM/H";
-  return `EST: ${Math.round(speedKmh)} KM/H`;
 }

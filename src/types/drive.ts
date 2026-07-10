@@ -19,6 +19,7 @@ export interface HudOverlayMetrics {
   motionForceMetresPerSecondSquared: number | null;
   latitude: number | null;
   longitude: number | null;
+  locationLabel: string | null;
   weather: WeatherInfo | null;
   orientationAlpha: number | null;
   orientationBeta: number | null;

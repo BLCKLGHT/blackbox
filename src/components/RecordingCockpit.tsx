@@ -4,27 +4,27 @@ import { RecordingTimer } from "@/components/RecordingTimer";
 import { RouteMap } from "@/components/RouteMap";
 import { SpeedDisplay } from "@/components/SpeedDisplay";
 import { TargetDistancePanel } from "@/components/TargetDistancePanel";
-import type { GpsSample, HudTarget, MotionSample, OrientationSample, WeatherInfo } from "@/types/drive";
+import type { GpsSample, HudTarget, MotionSample, OrientationSample } from "@/types/drive";
 
 export function RecordingCockpit({
   elapsed,
   gpsSamples,
   latestGps,
+  locationLabel,
   latestMotion,
   latestOrientation,
   stream,
   hudTargets,
-  weather,
   compact = false
 }: {
   elapsed: number;
   gpsSamples: GpsSample[];
   latestGps: GpsSample | null;
+  locationLabel: string | null;
   latestMotion: MotionSample | null;
   latestOrientation: OrientationSample | null;
   stream: MediaStream | null;
   hudTargets: HudTarget[];
-  weather: WeatherInfo | null;
   compact?: boolean;
 }) {
   return (
@@ -51,9 +51,9 @@ export function RecordingCockpit({
         hudTargets={hudTargets}
         gpsSamples={gpsSamples}
         latestGps={latestGps}
+        locationLabel={locationLabel}
         latestMotion={latestMotion}
         latestOrientation={latestOrientation}
-        weather={weather}
       />
       <div className={compact ? "grid grid-cols-[minmax(0,1.25fr)_minmax(104px,0.75fr)] gap-2" : "grid gap-3 md:grid-cols-[minmax(0,1.35fr)_minmax(180px,0.65fr)]"}>
         <TargetDistancePanel targets={hudTargets} compact={compact} />

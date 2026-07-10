@@ -89,7 +89,7 @@ const DETECTION_INTERVAL_MS = 280;
 const LOCKED_DETECTION_INTERVAL_MS = 420;
 const REACQUIRE_DETECTION_INTERVAL_MS = 140;
 const VISUAL_TRACK_INTERVAL_MS = 66;
-const RECORDING_FRAME_RATE = 30;
+const RECORDING_FRAME_RATE = 60;
 const TRACK_IOU_THRESHOLD = 0.18;
 const MAX_TRACK_MISSES = 12;
 const LEAD_SWITCH_MARGIN = 0.34;
@@ -174,8 +174,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
     return `${speed}${plate}`;
   }, []);
 
-  const drawTelemetryOverlay = useCallback((ctx: CanvasRenderingContext2D, metrics: HudOverlayMetrics, targets: HudTarget[], width: number, height: number) => {
-    const locked = targets.find((target) => target.lockState === "locked") ?? null;
+  const drawTelemetryOverlay = useCallback((ctx: CanvasRenderingContext2D, metrics: HudOverlayMetrics, _targets: HudTarget[], width: number, height: number) => {
     const speed = metrics.ownSpeedMetresPerSecond !== null ? `${(metrics.ownSpeedMetresPerSecond * 3.6).toFixed(0)} KMH` : "-- KMH";
     const acceleration = metrics.longitudinalAccelerationMetresPerSecondSquared;
     const accelerationLine = acceleration !== null ? `ACCEL ${Math.max(0, acceleration).toFixed(1)} M/S2 / ${formatForceG(metrics.accelerationForceG)}` : "ACCEL --";
@@ -183,11 +182,8 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
     const motionForce = metrics.motionForceMetresPerSecondSquared !== null ? `MOTION ${metrics.motionForceMetresPerSecondSquared.toFixed(1)} M/S2` : "MOTION --";
     const time = new Date(metrics.timestamp).toLocaleTimeString();
     const coords = metrics.latitude !== null && metrics.longitude !== null ? `${metrics.latitude.toFixed(5)}, ${metrics.longitude.toFixed(5)}` : "GPS --";
-    const weather = metrics.weather ? `${metrics.weather.temperatureCelsius?.toFixed(0) ?? "--"}C ${metrics.weather.summary}` : "WX --";
-    const gap = locked?.estimatedCarLengthsAhead !== null && locked?.estimatedCarLengthsAhead !== undefined ? `${locked.estimatedCarLengthsAhead.toFixed(1)} CAR LENGTHS` : "NO TARGET";
-    const motion = locked ? `${lockStateLabel(locked.displayState)} / ${relativeMotionLabel(locked.relativeMotionEstimate)} / RISK ${locked.closingRisk.toUpperCase()}` : "NO VEHICLE";
-    const confidence = locked ? `TRACK ${Math.round(locked.trackConfidence * 100)}% / LOCK ${(locked.lockDurationMs / 1000).toFixed(1)}S` : "TRACK --";
-    const lines = [speed, accelerationLine, brakingLine, motionForce, time, coords, weather, gap, motion, confidence];
+    const location = metrics.locationLabel ?? "ROAD --";
+    const lines = [speed, accelerationLine, brakingLine, motionForce, time, coords, location];
     if (acceleration !== null) {
       const samples = forceGraphSamplesRef.current;
       if (!samples.length || metrics.timestamp - samples[samples.length - 1].timestamp > 160) {
@@ -387,7 +383,7 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
       const drawFrame = () => {
         if (options.liveAnalysisEnabled) updateVisualLeadTrack(video, tracksRef.current, leadLockRef.current, visualTrackerRef, hudTargetsRef, setHudTargets);
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        drawHud(ctx, hudTargetsRef.current, canvas.width, canvas.height);
+        drawHud(ctx, options.liveAnalysisEnabled ? hudTargetsRef.current : [], canvas.width, canvas.height);
       };
       const scheduleVideoFrame = () => {
         if (!drawingActiveRef.current) return;
@@ -464,7 +460,9 @@ export function useVideoRecorder(quality: VideoQuality, audio: boolean, getOverl
 
       const recordingStream = options.hudEnabled ? await startCompositeRecording(mediaStream, options) : mediaStream;
       const mimeType = getSupportedMimeType();
-      const recorder = mimeType ? new MediaRecorder(recordingStream, { mimeType }) : new MediaRecorder(recordingStream);
+      const recorderOptions: MediaRecorderOptions = { videoBitsPerSecond: getVideoBitsPerSecond(quality) };
+      if (mimeType) recorderOptions.mimeType = mimeType;
+      const recorder = new MediaRecorder(recordingStream, recorderOptions);
       mimeTypeRef.current = recorder.mimeType || mimeType || "video/webm";
       recordingIdRef.current = `recording-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
       chunkSequenceRef.current = 0;
@@ -628,6 +626,7 @@ export async function analyzeRecordedVideo(input: {
       latitude: gps?.latitude ?? null,
       longitude: gps?.longitude ?? null,
       weather: null,
+      locationLabel: null,
       orientationAlpha: orientation?.alpha ?? null,
       orientationBeta: orientation?.beta ?? null,
       orientationGamma: orientation?.gamma ?? null
@@ -1532,6 +1531,12 @@ function getHudConfidenceThreshold(options: { auto: boolean; sensitivity: number
     return clamp(0.84 - options.sensitivity * 0.0042, 0.42, 0.84);
   }
   return 0.52;
+}
+
+function getVideoBitsPerSecond(quality: VideoQuality): number {
+  if (quality === "high") return 14_000_000;
+  if (quality === "low") return 3_000_000;
+  return 8_000_000;
 }
 
 function cameraLensFov(cameraLens: CameraLens): number {

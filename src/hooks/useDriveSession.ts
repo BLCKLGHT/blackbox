@@ -28,7 +28,9 @@ export function useDriveSession() {
   const geo = useGeolocationRecorder();
   const motion = useMotionRecorder();
   const [weather, setWeather] = useState<WeatherInfo | null>(null);
+  const [locationLabel, setLocationLabel] = useState<string | null>(null);
   const lastWeatherFetchRef = useRef({ timestamp: 0, latitude: 0, longitude: 0 });
+  const lastLocationFetchRef = useRef({ timestamp: 0, latitude: 0, longitude: 0 });
   const getOverlayMetrics = useCallback(
     (): HudOverlayMetrics => {
       const acceleration = calculateLongitudinalAcceleration(geo.samplesRef.current);
@@ -41,13 +43,14 @@ export function useDriveSession() {
         motionForceMetresPerSecondSquared: motion.latestMotionRef.current?.magnitude ?? null,
         latitude: geo.latestGpsRef.current?.latitude ?? null,
         longitude: geo.latestGpsRef.current?.longitude ?? null,
+        locationLabel,
         weather,
         orientationAlpha: motion.latestOrientationRef.current?.alpha ?? null,
         orientationBeta: motion.latestOrientationRef.current?.beta ?? null,
         orientationGamma: motion.latestOrientationRef.current?.gamma ?? null
       };
     },
-    [geo.latestGpsRef, geo.samplesRef, motion.latestMotionRef, motion.latestOrientationRef, weather]
+    [geo.latestGpsRef, geo.samplesRef, locationLabel, motion.latestMotionRef, motion.latestOrientationRef, weather]
   );
   const video = useVideoRecorder(settings.videoQuality, settings.audioRecording, getOverlayMetrics);
   const [session, setSession] = useState<DriveSession>(() => createSession(settings.retentionHours));
@@ -320,12 +323,32 @@ export function useDriveSession() {
       .catch(() => undefined);
   }, [geo.latestGps, isRecording]);
 
+  useEffect(() => {
+    const latest = geo.latestGps;
+    if (!isRecording || !latest) return;
+    if (settings.simulationMode) {
+      setLocationLabel("Simulation Rd, Hobart 7000");
+      return;
+    }
+    const now = Date.now();
+    const moved = Math.hypot(latest.latitude - lastLocationFetchRef.current.latitude, latest.longitude - lastLocationFetchRef.current.longitude) > 0.002;
+    if (now - lastLocationFetchRef.current.timestamp < 2 * 60 * 1000 && !moved) return;
+    lastLocationFetchRef.current.timestamp = now;
+    lastLocationFetchRef.current.latitude = latest.latitude;
+    lastLocationFetchRef.current.longitude = latest.longitude;
+    fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${latest.latitude}&lon=${latest.longitude}&zoom=18&addressdetails=1`)
+      .then((response) => response.json())
+      .then((data) => setLocationLabel(formatLocationLabel(data?.address)))
+      .catch(() => undefined);
+  }, [geo.latestGps, isRecording, settings.simulationMode]);
+
   return {
     settings,
     session,
     isRecording,
     elapsed,
     currentGps: geo.latestGps,
+    locationLabel,
     weather,
     gpsTrail,
     currentMotion: motion.latestMotion,
@@ -352,6 +375,20 @@ function weatherCodeLabel(code: unknown): string {
   if ([71, 73, 75, 77, 85, 86].includes(code)) return "Snow";
   if ([95, 96, 99].includes(code)) return "Storm";
   return "Weather";
+}
+
+function formatLocationLabel(address: Record<string, unknown> | null | undefined): string | null {
+  if (!address) return null;
+  const road = firstString(address.road, address.pedestrian, address.footway, address.cycleway, address.path);
+  const suburb = firstString(address.suburb, address.neighbourhood, address.city_district, address.town, address.city, address.village);
+  const postcode = firstString(address.postcode);
+  const parts = [road, suburb, postcode].filter((part): part is string => Boolean(part));
+  return parts.length ? parts.join(", ") : null;
+}
+
+function firstString(...values: unknown[]): string | null {
+  const value = values.find((candidate) => typeof candidate === "string" && candidate.trim().length > 0);
+  return typeof value === "string" ? value : null;
 }
 
 function calculateLongitudinalAcceleration(samples: { timestamp: number; speedMetresPerSecond: number | null }[]): number | null {
